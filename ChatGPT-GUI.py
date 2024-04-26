@@ -1,742 +1,794 @@
-import os, shutil, platform, ctypes, glob, subprocess, traceback
-import urllib.parse
-from io import StringIO
-from functools import partial
-# set working directory
-thisFile = os.path.realpath(__file__)
-wd = os.path.dirname(thisFile)
-if os.getcwd() != wd:
-    os.chdir(wd)
-if not os.path.isfile("config.py"):
-    open("config.py", "a", encoding="utf-8").close()
-import config
-from configDefault import *
-import re, openai, tiktoken, sqlite3, webbrowser, sys, pprint, qdarktheme
-from shutil import copyfile
-from gtts import gTTS
-try:
-    from pocketsphinx import LiveSpeech, get_model_path
-    isPocketsphinxInstalled = True
-except:
-    isPocketsphinxInstalled = False
+#!/usr/bin/env python
 
+# import ctypes
+from __future__ import annotations
+
+# try:
+#     from pocketsphinx import LiveSpeech, get_model_path
+#     sphinx_installed = True
+# except ImportWarning:
+#     sphinx_installed = False
+import contextlib
+import ctypes
+import glob
+import locale
+import logging
+import os
+import platform
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import traceback
+import urllib.parse
+import webbrowser
+from ast import literal_eval
 from datetime import datetime
+from functools import partial
+from io import StringIO
+from pathlib import Path
+from shutil import copyfile
+from typing import Any
+
+import openai
+import qdarktheme
+import tiktoken
+from gtts import gTTS
+from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QFontMetrics, QGuiApplication, QIcon, QStandardItem, QStandardItemModel, QTextDocument
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QCompleter,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListView,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config_manager import ConfigManager
 from util.Worker import ChatGPTResponse, OpenAIImage
-if config.qtLibrary == "pyside6":
-    from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-    from PySide6.QtCore import Qt, QThread, Signal, QRegularExpression
-    from PySide6.QtGui import QStandardItemModel, QStandardItem, QGuiApplication, QAction, QIcon, QFontMetrics, QTextDocument
-    from PySide6.QtWidgets import QCompleter, QMenu, QSystemTrayIcon, QApplication, QMainWindow, QWidget, QDialog, QFileDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QCheckBox, QPlainTextEdit, QProgressBar, QPushButton, QListView, QHBoxLayout, QVBoxLayout, QLineEdit, QSplitter, QComboBox
-else:
-    from qtpy.QtPrintSupport import QPrinter, QPrintDialog
-    from qtpy.QtCore import Qt, QThread, Signal, QRegularExpression
-    from qtpy.QtGui import QStandardItemModel, QStandardItem, QGuiApplication, QIcon, QFontMetrics, QTextDocument
-    from qtpy.QtWidgets import QCompleter, QMenu, QSystemTrayIcon, QApplication, QMainWindow, QAction, QWidget, QDialog, QFileDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QCheckBox, QPlainTextEdit, QProgressBar, QPushButton, QListView, QHBoxLayout, QVBoxLayout, QLineEdit, QSplitter, QComboBox
+
+config_manager = ConfigManager()
+
+this_file = Path(__file__).resolve()
+wd = this_file.parent
+if Path.cwd() != wd:
+    os.chdir(wd)
+if not Path('config.py').is_file():
+    Path('config.py').open('a').close()
 
 
 class SpeechRecognitionThread(QThread):
     phrase_recognized = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QThread) -> None:
         super().__init__(parent)
         self.is_running = False
 
-    def run(self):
+    def run(self) -> None:
         self.is_running = True
-        if config.pocketsphinxModelPath:
-            # download English dictionary at: http://www.speech.cs.cmu.edu/cgi-bin/cmudict
-            # download voice models at https://sourceforge.net/projects/cmusphinx/files/Acoustic%20and%20Language%20Models/
-            speech = LiveSpeech(
-                #sampling_rate=16000,  # optional
-                hmm=get_model_path(config.pocketsphinxModelPath),
-                lm=get_model_path(config.pocketsphinxModelPathBin),
-                dic=get_model_path(config.pocketsphinxModelPathDict),
-            )
-        else:
-            speech = LiveSpeech()
+        # if config_manager.get_setting('pocketsphinxModelPath'):
+        #     # download English dictionary at: http://www.speech.cs.cmu.edu/cgi-bin/cmudict
+        #     # download voice models at https://sourceforge.net/projects/cmusphinx/files/Acoustic%20and%20Language%20Models/
+        #     speech = LiveSpeech(
+        #         # sampling_rate=16000,  # optional
+        #         hmm=get_model_path(config_manager.get_setting('pocketsphinxModelPath')),
+        #         lm=get_model_path(config_manager.get_setting('pocketsphinxModelPathBin')),
+        #         dic=get_model_path(config_manager.get_setting('pocketsphinxModelPathDict')),
+        #     )
+        # else:
+        #     speech = LiveSpeech()
 
-        for phrase in speech:
-            if not self.is_running:
-                break
-            recognized_text = str(phrase)
-            self.phrase_recognized.emit(recognized_text)
+        # for phrase in speech:
+        #     if not self.is_running:
+        #         break
+        #     recognized_text = str(phrase)
+        #     self.phrase_recognized.emit(recognized_text)
 
-    def stop(self):
+    def stop(self) -> None:
         self.is_running = False
 
 
 class ApiDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent: None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(config.thisTranslation["settings"])
+        self.setWindowTitle(config_manager.get_translation('settings'))
 
-        self.apiKeyEdit = QLineEdit(config.openaiApiKey)
+        self.apiKeyEdit = QLineEdit(config_manager.get_setting('openaiApiKey'))
         self.apiKeyEdit.setEchoMode(QLineEdit.Password)
-        self.orgEdit = QLineEdit(config.openaiApiOrganization)
+        self.orgEdit = QLineEdit(config_manager.get_setting('openaiApiOrganization'))
         self.orgEdit.setEchoMode(QLineEdit.Password)
         self.apiModelBox = QComboBox()
-        initialIndex = 0
-        index = 0
-        for key in ("gpt-3.5-turbo", "gpt-3.5-turbo-16k", "gpt-4", "gpt-4-32k"):
-            self.apiModelBox.addItem(key)
-            if key == config.chatGPTApiModel:
-                initialIndex = index
-            index += 1
-        self.apiModelBox.setCurrentIndex(initialIndex)
+        initial_index = 0
+        for count, value in enumerate({'gpt-4-turbo-preview', 'gpt-4-0125-preview', 'gpt-4-1106-preview', 'gpt-3.5-turbo', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106'}):
+            self.apiModelBox.addItem(value)
+            if value == config_manager.get_setting('chatGPTApiModel'):
+                initial_index = count
+        self.apiModelBox.setCurrentIndex(initial_index)
         self.functionCallingBox = QComboBox()
-        initialIndex = 0
-        index = 0
-        for key in ("auto", "none"):
-            self.functionCallingBox.addItem(key)
-            if key == config.chatGPTApiFunctionCall:
-                initialIndex = index
-            index += 1
-        self.functionCallingBox.setCurrentIndex(initialIndex)
+        initial_index = 0
+        for count, value in enumerate({'auto', 'none'}):
+            self.functionCallingBox.addItem(value)
+            if value == config_manager.get_setting('chatGPTApiFunctionCall'):
+                initial_index = count
+        self.functionCallingBox.setCurrentIndex(initial_index)
         self.loadingInternetSearchesBox = QComboBox()
-        initialIndex = 0
-        index = 0
-        for key in ("always", "auto", "none"):
-            self.loadingInternetSearchesBox.addItem(key)
-            if key == config.loadingInternetSearches:
-                initialIndex = index
-            index += 1
-        self.loadingInternetSearchesBox.setCurrentIndex(initialIndex)
-        self.maxTokenEdit = QLineEdit(str(config.chatGPTApiMaxTokens))
-        self.maxTokenEdit.setToolTip("The maximum number of tokens to generate in the completion.\nThe token count of your prompt plus max_tokens cannot exceed the model's context length. Most models have a context length of 2048 tokens (except for the newest models, which support 4096).")
-        self.maxInternetSearchResults = QLineEdit(str(config.maximumInternetSearchResults))
-        self.maxInternetSearchResults.setToolTip("The maximum number of internet search response to be included.")
-        #self.includeInternetSearches = QCheckBox(config.thisTranslation["include"])
-        #self.includeInternetSearches.setToolTip("Include latest internet search results")
-        #self.includeInternetSearches.setCheckState(Qt.Checked if config.includeDuckDuckGoSearchResults else Qt.Unchecked)
-        #self.includeDuckDuckGoSearchResults = config.includeDuckDuckGoSearchResults
-        self.autoScrollingCheckBox = QCheckBox(config.thisTranslation["enable"])
-        self.autoScrollingCheckBox.setToolTip("Auto-scroll display as responses are received")
-        self.autoScrollingCheckBox.setCheckState(Qt.Checked if config.chatGPTApiAutoScrolling else Qt.Unchecked)
-        self.chatGPTApiAutoScrolling = config.chatGPTApiAutoScrolling
-        self.chatAfterFunctionCalledCheckBox = QCheckBox(config.thisTranslation["enable"])
-        self.chatAfterFunctionCalledCheckBox.setToolTip("Automatically generate next chat response after a function is called")
-        self.chatAfterFunctionCalledCheckBox.setCheckState(Qt.Checked if config.chatAfterFunctionCalled else Qt.Unchecked)
-        self.chatAfterFunctionCalled = config.chatAfterFunctionCalled
-        self.runPythonScriptGloballyCheckBox = QCheckBox(config.thisTranslation["enable"])
-        self.runPythonScriptGloballyCheckBox.setToolTip("Run user python script in global scope")
-        self.runPythonScriptGloballyCheckBox.setCheckState(Qt.Checked if config.runPythonScriptGlobally else Qt.Unchecked)
-        self.runPythonScriptGlobally = config.runPythonScriptGlobally
-        self.contextEdit = QLineEdit(config.chatGPTApiContext)
-        firstInputOnly = config.thisTranslation["firstInputOnly"]
-        allInputs = config.thisTranslation["allInputs"]
+        initial_index = 0
+        for count, value in enumerate({'always', 'auto', 'none'}):
+            self.loadingInternetSearchesBox.addItem(value)
+            if value == config_manager.get_setting('loadingInternetSearches'):
+                initial_index = count
+        self.loadingInternetSearchesBox.setCurrentIndex(initial_index)
+        self.maxTokenEdit = QLineEdit(str(config_manager.get_setting('chatGPTApiMaxTokens')))
+        self.maxTokenEdit.setToolTip('''The maximum number of tokens to generate in the completion.
+The token count of your prompt plus max_tokens cannot exceed the model's context length.
+Most models have a context length of 2048 tokens (except for the newest models, which support 4096).''')
+        self.maxInternetSearchResults = QLineEdit(str(config_manager.get_setting('maximumInternetSearchResults')))
+        self.maxInternetSearchResults.setToolTip('The maximum number of internet search response to be included.')
+        # self.includeInternetSearches = QCheckBox(config_manager.get_setting("this_translation").include)
+        # self.includeInternetSearches.setToolTip("Include latest internet search results")
+        # self.includeInternetSearches.setCheckState(Qt.Checked if config_manager.get_setting("includeDuckDuckGoSearchResults") else Qt.Unchecked)
+        # self.includeDuckDuckGoSearchResults = config_manager.get_setting("includeDuckDuckGoSearchResults")
+        self.autoScrollingCheckBox = QCheckBox(config_manager.get_translation('enable'))
+        self.autoScrollingCheckBox.setToolTip('Auto-scroll display as responses are received')
+        self.autoScrollingCheckBox.setCheckState(Qt.Checked if config_manager.get_setting('chatGPTApiAutoScrolling') else Qt.Unchecked)
+        self.chatGPTApiAutoScrolling = config_manager.get_setting('chatGPTApiAutoScrolling')
+        self.chatAfterFunctionCalledCheckBox = QCheckBox(config_manager.get_translation('enable'))
+        self.chatAfterFunctionCalledCheckBox.setToolTip('Automatically generate next chat response after a function is called')
+        self.chatAfterFunctionCalledCheckBox.setCheckState(Qt.Checked if config_manager.get_setting('chatAfterFunctionCalled') else Qt.Unchecked)
+        self.chatAfterFunctionCalled = config_manager.get_setting('chatAfterFunctionCalled')
+        self.runPythonScriptGloballyCheckBox = QCheckBox(config_manager.get_translation('enable'))
+        self.runPythonScriptGloballyCheckBox.setToolTip('Run user python script in global scope')
+        self.runPythonScriptGloballyCheckBox.setCheckState(Qt.Checked if config_manager.get_setting('runPythonScriptGlobally') else Qt.Unchecked)
+        self.runPythonScriptGlobally = config_manager.get_setting('runPythonScriptGlobally')
+        self.contextEdit = QLineEdit(config_manager.get_setting('chatGPTApiContext'))
+        first_input_only = config_manager.get_translation('firstInputOnly')
+        all_inputs = config_manager.get_translation('allInputs')
         self.applyContextIn = QComboBox()
-        self.applyContextIn.addItems([firstInputOnly, allInputs])
-        self.applyContextIn.setCurrentIndex(1 if config.chatGPTApiContextInAllInputs else 0)
+        self.applyContextIn.addItems([first_input_only, all_inputs])
+        self.applyContextIn.setCurrentIndex(1 if config_manager.get_setting('chatGPTApiContextInAllInputs') else 0)
         self.predefinedContextBox = QComboBox()
-        initialIndex = 0
+        initial_index = 0
         index = 0
-        for key, value in config.predefinedContexts.items():
+        for key, value in config_manager.get_internal('predefinedContexts').items():
             self.predefinedContextBox.addItem(key)
-            self.predefinedContextBox.setItemData(self.predefinedContextBox.count()-1, value, role=Qt.ToolTipRole)
-            if key == config.chatGPTApiPredefinedContext:
-                initialIndex = index
+            self.predefinedContextBox.setItemData(self.predefinedContextBox.count() - 1, value, role=Qt.ToolTipRole)
+            if key == config_manager.get_setting('chatGPTApiPredefinedContext'):
+                initial_index = index
             index += 1
-        self.predefinedContextBox.currentIndexChanged.connect(self.predefinedContextBoxChanged)
-        self.predefinedContextBox.setCurrentIndex(initialIndex)
+        self.predefinedContextBox.currentIndexChanged.connect(self.predefined_context_box_changed)
+        self.predefinedContextBox.setCurrentIndex(initial_index)
         # set availability of self.contextEdit in case there is no index changed
-        self.contextEdit.setDisabled(True) if not initialIndex == 1 else self.contextEdit.setEnabled(True)
-        buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttonBox.accepted.connect(self.accept)
-        buttonBox.rejected.connect(self.reject)
+        self.contextEdit.setDisabled(True) if initial_index != 1 else self.contextEdit.setEnabled(True)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
 
         layout = QFormLayout()
         # https://platform.openai.com/account/api-keys
-        chatAfterFunctionCalled = config.thisTranslation["chatAfterFunctionCalled"]
-        runPythonScriptGlobally = config.thisTranslation["runPythonScriptGlobally"]
-        autoScroll = config.thisTranslation["autoScroll"]
-        predefinedContext = config.thisTranslation["predefinedContext"]
-        context = config.thisTranslation["chatContext"]
-        applyContext = config.thisTranslation["applyContext"]
-        latestOnlineSearchResults = config.thisTranslation["latestOnlineSearchResults"]
-        maximumOnlineSearchResults = config.thisTranslation["maximumOnlineSearchResults"]
-        required = config.thisTranslation["required"]
-        optional = config.thisTranslation["optional"]
-        layout.addRow(f"OpenAI API Key [{required}]:", self.apiKeyEdit)
-        layout.addRow(f"Organization ID [{optional}]:", self.orgEdit)
-        layout.addRow(f"API Model [{required}]:", self.apiModelBox)
-        layout.addRow(f"Max Token [{required}]:", self.maxTokenEdit)
-        layout.addRow(f"Function Calling [{optional}]:", self.functionCallingBox)
-        layout.addRow(f"{chatAfterFunctionCalled} [{optional}]:", self.chatAfterFunctionCalledCheckBox)
-        layout.addRow(f"{predefinedContext} [{optional}]:", self.predefinedContextBox)
-        layout.addRow(f"{context} [{optional}]:", self.contextEdit)
-        layout.addRow(f"{applyContext} [{optional}]:", self.applyContextIn)
-        layout.addRow(f"{latestOnlineSearchResults} [{optional}]:", self.loadingInternetSearchesBox)
-        layout.addRow(f"{maximumOnlineSearchResults} [{optional}]:", self.maxInternetSearchResults)
-        layout.addRow(f"{autoScroll} [{optional}]:", self.autoScrollingCheckBox)
-        layout.addRow(f"{runPythonScriptGlobally} [{optional}]:", self.runPythonScriptGloballyCheckBox)
-        layout.addWidget(buttonBox)
-        self.autoScrollingCheckBox.stateChanged.connect(self.toggleAutoScrollingCheckBox)
-        self.chatAfterFunctionCalledCheckBox.stateChanged.connect(self.toggleChatAfterFunctionCalled)
-        self.runPythonScriptGloballyCheckBox.stateChanged.connect(self.toggleRunPythonScriptGlobally)
-        self.functionCallingBox.currentIndexChanged.connect(self.functionCallingBoxChanged)
-        self.loadingInternetSearchesBox.currentIndexChanged.connect(self.loadingInternetSearchesBoxChanged)
+        chat_after_function_called = config_manager.get_translation('chatAfterFunctionCalled')
+        run_python_script_globally = config_manager.get_translation('runPythonScriptGlobally')
+        auto_scroll = config_manager.get_translation('autoScroll')
+        predefined_context = config_manager.get_translation('predefinedContext')
+        context = config_manager.get_translation('chatContext')
+        apply_context = config_manager.get_translation('applyContext')
+        latest_online_search_result = config_manager.get_translation('latestOnlineSearchResults')
+        maximum_online_search_results = config_manager.get_translation('maximumOnlineSearchResults')
+        required = config_manager.get_translation('required')
+        optional = config_manager.get_translation('optional')
+        layout.addRow(f'OpenAI API Key [{required}]:', self.apiKeyEdit)
+        layout.addRow(f'Organization ID [{optional}]:', self.orgEdit)
+        layout.addRow(f'API Model [{required}]:', self.apiModelBox)
+        layout.addRow(f'Max Token [{required}]:', self.maxTokenEdit)
+        layout.addRow(f'Function Calling [{optional}]:', self.functionCallingBox)
+        layout.addRow(f'{chat_after_function_called} [{optional}]:', self.chatAfterFunctionCalledCheckBox)
+        layout.addRow(f'{predefined_context} [{optional}]:', self.predefinedContextBox)
+        layout.addRow(f'{context} [{optional}]:', self.contextEdit)
+        layout.addRow(f'{apply_context} [{optional}]:', self.applyContextIn)
+        layout.addRow(f'{latest_online_search_result} [{optional}]:', self.loadingInternetSearchesBox)
+        layout.addRow(f'{maximum_online_search_results} [{optional}]:', self.maxInternetSearchResults)
+        layout.addRow(f'{auto_scroll} [{optional}]:', self.autoScrollingCheckBox)
+        layout.addRow(f'{run_python_script_globally} [{optional}]:', self.runPythonScriptGloballyCheckBox)
+        layout.addWidget(button_box)
+        self.autoScrollingCheckBox.stateChanged.connect(self.toggle_auto_scrolling_checkbox)
+        self.chatAfterFunctionCalledCheckBox.stateChanged.connect(self.toggle_chat_after_function_called)
+        self.runPythonScriptGloballyCheckBox.stateChanged.connect(self.toggle_run_python_script_globally)
+        self.functionCallingBox.currentIndexChanged.connect(self.dunction_calling_box_changes)
+        self.loadingInternetSearchesBox.currentIndexChanged.connect(self.loading_internet_searches_box_changes)
 
         self.setLayout(layout)
 
-    def api_key(self):
+    def api_key(self) -> str:
         return self.apiKeyEdit.text().strip()
 
-    def org(self):
+    def org(self) -> str:
         return self.orgEdit.text().strip()
 
-    def context(self):
+    def context(self) -> str:
         return self.contextEdit.text().strip()
 
-    def contextInAllInputs(self):
-        return True if self.applyContextIn.currentIndex() == 1 else False
+    def context_in_all_inputs(self) -> bool:
+        return bool(self.applyContextIn.currentIndex() == 1)
 
-    def predefinedContextBoxChanged(self, index):
-        self.contextEdit.setDisabled(True) if not index == 1 else self.contextEdit.setEnabled(True)
+    def predefined_context_box_changed(self, index: str) -> bool | None:
+        self.contextEdit.setDisabled(True) if index != 1 else self.contextEdit.setEnabled(True)
 
-    def predefinedContext(self):
+    def predefined_context(self) -> str:
         return self.predefinedContextBox.currentText()
-        #return self.predefinedContextBox.currentData(Qt.ToolTipRole)
+        # return self.predefinedContextBox.currentData(Qt.ToolTipRole)
 
-    def apiModel(self):
-        #return "gpt-3.5-turbo"
+    def api_model(self) -> str:
+        # return "gpt-3.5-turbo"
         return self.apiModelBox.currentText()
 
-    def functionCalling(self):
+    def function_calling(self) -> str:
         return self.functionCallingBox.currentText()
 
-    def max_token(self):
-        return self.maxTokenEdit.text().strip()
-
-    def enable_auto_scrolling(self):
+    def enable_auto_scrolling(self) -> str | bool:
         return self.chatGPTApiAutoScrolling
 
-    def toggleAutoScrollingCheckBox(self, state):
-        self.chatGPTApiAutoScrolling = True if state else False
+    def toggle_auto_scrolling_checkbox(self, *, state: bool) -> bool | None:
+        self.chatGPTApiAutoScrolling = bool(state)
 
-    def enable_chatAfterFunctionCalled(self):
+    def enable_chat_after_function_called(self) -> str | bool:
         return self.chatAfterFunctionCalled
 
-    def toggleChatAfterFunctionCalled(self, state):
-        self.chatAfterFunctionCalled = True if state else False
+    def toggle_chat_after_function_called(self, *, state: bool) -> bool | None:
+        self.chatAfterFunctionCalled = bool(state)
 
-    def enable_runPythonScriptGlobally(self):
+    def enable_run_python_script_globally(self) -> str | bool:
         return self.runPythonScriptGlobally
 
-    def toggleRunPythonScriptGlobally(self, state):
-        self.runPythonScriptGlobally = True if state else False
+    def toggle_run_python_script_globally(self, *, state: bool) -> bool | None:
+        self.runPythonScriptGlobally = bool(state)
 
-    def functionCallingBoxChanged(self):
-        if self.functionCallingBox.currentText() == "none" and self.loadingInternetSearchesBox.currentText() == "auto":
-            self.loadingInternetSearchesBox.setCurrentText("none")
+    def dunction_calling_box_changes(self) -> None:
+        if self.functionCallingBox.currentText() == 'none' and self.loadingInternetSearchesBox.currentText() == 'auto':
+            self.loadingInternetSearchesBox.setCurrentText('none')
 
-    def loadingInternetSearches(self):
+    def loading_internet_searches(self) -> str:
         return self.loadingInternetSearchesBox.currentText()
 
-    def loadingInternetSearchesBoxChanged(self, _):
-        if self.loadingInternetSearchesBox.currentText() == "auto":
-            self.functionCallingBox.setCurrentText("auto")
+    def loading_internet_searches_box_changes(self) -> None:
+        if self.loadingInternetSearchesBox.currentText() == 'auto':
+            self.functionCallingBox.setCurrentText('auto')
 
-    def max_token(self):
+    def max_token(self) -> str:
         return self.maxTokenEdit.text().strip()
 
-    def max_internet_search_results(self):
+    def max_internet_search_results(self) -> str:
         return self.maxInternetSearchResults.text().strip()
 
+
 class Database:
-    def __init__(self, filePath=""):
-        def regexp(expr, item):
+    def __init__(self, file_path: str = '') -> None:
+        def regexp(expr: str, item: str) -> bool:
             reg = re.compile(expr, flags=re.IGNORECASE)
             return reg.search(item) is not None
-        defaultFilePath = config.chatGPTApiLastChatDatabase if config.chatGPTApiLastChatDatabase and os.path.isfile(config.chatGPTApiLastChatDatabase) else os.path.join(wd, "chats", "default.chat")
-        self.filePath = filePath if filePath else defaultFilePath
-        self.connection = sqlite3.connect(self.filePath)
-        self.connection.create_function("REGEXP", 2, regexp)
+
+        default_file_path = (
+            config_manager.get_setting('chatGPTApiLastChatDatabase')
+            if config_manager.get_setting('chatGPTApiLastChatDatabase') and Path(config_manager.get_setting('chatGPTApiLastChatDatabase')).is_file()
+            else Path(wd) / 'chats' / 'default.chat'
+        )
+        self.file_path = file_path or default_file_path
+        self.connection = sqlite3.connect(self.file_path)
+        self.connection.create_function('REGEXP', 2, regexp)
         self.cursor = self.connection.cursor()
         self.cursor.execute('CREATE TABLE IF NOT EXISTS data (id TEXT PRIMARY KEY, title TEXT, content TEXT)')
         self.connection.commit()
 
-    def insert(self, id, title, content):
-        self.cursor.execute('SELECT * FROM data WHERE id = ?', (id,))
+    def insert(self, i_d: str, title: str, content: str) -> None:
+        self.cursor.execute('SELECT * FROM data WHERE id = ?', (i_d,))
         existing_data = self.cursor.fetchone()
         if existing_data:
             if existing_data[1] == title and existing_data[2] == content:
                 return
-            else:
-                self.cursor.execute('UPDATE data SET title = ?, content = ? WHERE id = ?', (title, content, id))
-                self.connection.commit()
+            self.cursor.execute('UPDATE data SET title = ?, content = ? WHERE id = ?', (title, content, i_d))
+            self.connection.commit()
         else:
-            self.cursor.execute('INSERT INTO data (id, title, content) VALUES (?, ?, ?)', (id, title, content))
+            self.cursor.execute('INSERT INTO data (id, title, content) VALUES (?, ?, ?)', (i_d, title, content))
             self.connection.commit()
 
-    def search(self, title, content):
-        if config.regexpSearchEnabled:
-            # with regular expression
+    def search(self, title: str, content: str) -> list[Any]:
+        if config_manager.get_setting('regexpSearchEnabled'):
+            # with regex
             self.cursor.execute('SELECT * FROM data WHERE title REGEXP ? AND content REGEXP ?', (title, content))
         else:
-            # without regular expression
-            self.cursor.execute('SELECT * FROM data WHERE title LIKE ? AND content LIKE ?', ('%{}%'.format(title), '%{}%'.format(content)))
+            # without regex
+            self.cursor.execute('SELECT * FROM data WHERE title LIKE ? AND content LIKE ?', (f'%{title}%', f'%{content}%'))
         return self.cursor.fetchall()
 
-    def delete(self, id):
-        self.cursor.execute('DELETE FROM data WHERE id = ?', (id,))
+    def delete(self, i_d: str) -> None:
+        self.cursor.execute('DELETE FROM data WHERE id = ?', (i_d,))
         self.connection.commit()
 
-    def clear(self):
+    def clear(self) -> None:
         self.cursor.execute('DELETE FROM data')
         self.connection.commit()
 
 
 class ChatGPTAPI(QWidget):
-
-    def __init__(self, parent):
+    def __init__(self, parent: Any) -> None:
         super().__init__()
-        config.chatGPTApi = self
+        # config.chatGPTApi = self
+        config_manager.update_internal('chatGPTApi', self)
         self.parent = parent
         # required
-        openai.api_key = os.environ["OPENAI_API_KEY"] = config.openaiApiKey
+        openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openaiApiKey')
         # optional
-        if config.openaiApiOrganization:
-            openai.organization = config.openaiApiOrganization
+        if config_manager.get_setting('openaiApiOrganization'):
+            openai.organization = config_manager.get_setting('openaiApiOrganization')
         # set title
-        self.setWindowTitle("ChatGPT-GUI")
+        self.setWindowTitle('ChatGPTQT')
         # set variables
-        self.setupVariables()
+        self.setup_variables()
         # run plugins
-        self.runPlugins()
+        # self.runPlugins()
         # setup interface
-        self.setupUI()
+        self.setup_ui()
         # load database
-        self.loadData()
+        self.load_data()
         # new entry at launch
-        self.newData()
+        self.new_data()
 
-    def openDatabase(self):
+    def open_database(self) -> None:
         # Show a file dialog to get the file path to open
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        filePath, _ = QFileDialog.getOpenFileName(self, "Open Database", os.path.join(wd, "chats", "default.chat"), "ChatGPT-GUI Database (*.chat)", options=options)
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Open Database', os.path.join(wd, 'chats', 'default.chat'), 'ChatGPTQT Database (*.chat)', options=options)
 
         # If the user selects a file path, open the file
-        self.database = Database(filePath)
-        self.loadData()
-        self.updateTitle(filePath)
-        self.newData()
+        self.database = Database(file_path)
+        self.load_data()
+        self.update_title(file_path)
+        self.new_data()
 
-    def newDatabase(self, copyExistingDatabase=False):
+    def new_database(self, copy_existing: bool = False) -> None:
         # Show a file dialog to get the file path to save
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        filePath, _ = QFileDialog.getSaveFileName(self, "New Database", os.path.join(wd, "chats", self.database.filePath if copyExistingDatabase else "new.chat"), "ChatGPT-GUI Database (*.chat)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            'New Database',
+            os.path.join(wd, 'chats', self.database.file_path if copy_existing else 'new.chat'),
+            'ChatGPTQT Database (*.chat)',
+            options=options,
+        )
 
         # If the user selects a file path, save the file
-        if filePath:
+        if file_path:
             # make sure the file ends with ".chat"
-            if not filePath.endswith(".chat"):
-                filePath += ".chat"
+            if not file_path.endswith('.chat'):
+                file_path += '.chat'
             # ignore if copy currently opened database
-            if copyExistingDatabase and os.path.abspath(filePath) == os.path.abspath(self.database.filePath):
+            if copy_existing and Path(file_path).resolve() == Path(self.database.file_path).resolve():
                 return
             # Check if the file already exists
-            if os.path.exists(filePath):
+            if Path(file_path).is_file():
                 # Ask the user if they want to replace the existing file
-                msgBox = QMessageBox()
-                msgBox.setWindowTitle("Confirm overwrite")
-                msgBox.setText(f"The file {filePath} already exists. Do you want to replace it?")
-                msgBox.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-                msgBox.setDefaultButton(QMessageBox.No)
-                if msgBox.exec() == QMessageBox.No:
+                msg_box = QMessageBox()
+                msg_box.setWindowTitle('Confirm overwrite')
+                msg_box.setText(f'The file {file_path} already exists. Do you want to replace it?')
+                msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                msg_box.setDefaultButton(QMessageBox.No)
+                if msg_box.exec() == QMessageBox.No:
                     return
-                else:
-                    os.remove(filePath)
+                Path(file_path).unlink()
 
             # create a new database
-            if copyExistingDatabase:
-                shutil.copy(self.database.filePath, filePath)
-            self.database = Database(filePath)
-            self.loadData()
-            self.updateTitle(filePath)
-            self.newData()
+            if copy_existing:
+                shutil.copy(self.database.file_path, file_path)
+            self.database = Database(file_path)
+            self.load_data()
+            self.update_title(file_path)
+            self.new_data()
 
-    def updateTitle(self, filePath=""):
-        if not filePath:
-            filePath = self.database.filePath
-        config.chatGPTApiLastChatDatabase = filePath
-        basename = os.path.basename(filePath)
-        self.parent.setWindowTitle(f"ChatGPT-GUI - {basename}")
+    def update_title(self, file_path: str | Path = '') -> None:
+        if not file_path:
+            file_path = self.database.file_path
+        config_manager.update_setting('chatGPTApiLastChatDatabase', str(file_path))
+        basename = Path(file_path).name
+        self.parent.setWindowTitle(f'ChatGPTQT - {basename}')
 
-    def setupVariables(self):
+    def setup_variables(self) -> None:
         self.busyLoading = False
-        self.contentID = ""
+        self.contentID = ''
         self.database = Database()
-        self.updateTitle()
+        self.update_title()
         self.data_list = []
-        self.recognitionThread = SpeechRecognitionThread(self)
-        self.recognitionThread.phrase_recognized.connect(self.onPhraseRecognized)
+        # self.recognitionThread = SpeechRecognitionThread(self)
+        # self.recognitionThread.phrase_recognized.connect(self.onPhraseRecognized)
 
-    def setupUI(self):
-        layout000 = QHBoxLayout()
-        self.setLayout(layout000)
-        widgetLt = QWidget()
-        layout000Lt = QVBoxLayout()
-        widgetLt.setLayout(layout000Lt)
-        widgetRt = QWidget()
-        layout000Rt = QVBoxLayout()
-        widgetRt.setLayout(layout000Rt)
-        
+    def setup_ui(self) -> None:  # noqa: PLR0914, PLR0915
+        lt0 = QHBoxLayout()
+        self.setLayout(lt0)
+        widget_lt = QWidget()
+        lt0l = QVBoxLayout()
+        widget_lt.setLayout(lt0l)
+        wdr = QWidget()
+        lt0r = QVBoxLayout()
+        wdr.setLayout(lt0r)
+
         splitter = QSplitter(Qt.Horizontal, self)
-        splitter.addWidget(widgetLt)
-        splitter.addWidget(widgetRt)
-        layout000.addWidget(splitter)
+        splitter.addWidget(widget_lt)
+        splitter.addWidget(wdr)
+        lt0.addWidget(splitter)
 
-        #widgets on the right
+        # widgets on the right
         self.searchInput = QLineEdit()
         self.searchInput.setClearButtonEnabled(True)
         self.replaceInput = QLineEdit()
         self.replaceInput.setClearButtonEnabled(True)
         self.userInput = QLineEdit()
-        completer = QCompleter(config.inputSuggestions)
+        completer = QCompleter(config_manager.get_setting('inputSuggestions'))
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.userInput.setCompleter(completer)
-        self.userInput.setPlaceholderText(config.thisTranslation["messageHere"])
-        self.userInput.mousePressEvent = lambda _ : self.userInput.selectAll()
+        self.userInput.setPlaceholderText(config_manager.get_translation('messageHere'))
+        self.userInput.mousePressEvent = lambda _: self.userInput.selectAll()
         self.userInput.setClearButtonEnabled(True)
         self.userInputMultiline = QPlainTextEdit()
-        self.userInputMultiline.setPlaceholderText(config.thisTranslation["messageHere"])
-        self.voiceCheckbox = QCheckBox(config.thisTranslation["voice"])
-        self.voiceCheckbox.setToolTip(config.thisTranslation["voiceTyping"])
+        self.userInputMultiline.setPlaceholderText(config_manager.get_translation('messageHere'))
+        self.voiceCheckbox = QCheckBox(config_manager.get_translation('voice'))
+        self.voiceCheckbox.setToolTip(config_manager.get_translation('voiceTyping'))
         self.voiceCheckbox.setCheckState(Qt.Unchecked)
         self.contentView = QPlainTextEdit()
         self.contentView.setReadOnly(True)
         self.progressBar = QProgressBar()
-        self.progressBar.setRange(0, 0) # Set the progress bar to use an indeterminate progress indicator
-        apiKeyButton = QPushButton(config.thisTranslation["settings"])
-        self.multilineButton = QPushButton("+")
+        self.progressBar.setRange(0, 0)  # Set the progress bar to use an indeterminate progress indicator
+        api_key_button = QPushButton(config_manager.get_translation('settings'))
+        self.multilineButton = QPushButton('+')
         font_metrics = QFontMetrics(self.multilineButton.font())
         text_rect = font_metrics.boundingRect(self.multilineButton.text())
         button_width = text_rect.width() + 20
         button_height = text_rect.height() + 10
         self.multilineButton.setFixedSize(button_width, button_height)
-        self.sendButton = QPushButton(config.thisTranslation["send"])
-        searchLabel = QLabel(config.thisTranslation["searchFor"])
-        replaceLabel = QLabel(config.thisTranslation["replaceWith"])
-        searchReplaceButton = QPushButton(config.thisTranslation["replace"])
-        searchReplaceButton.setToolTip(config.thisTranslation["replaceSelectedText"])
-        searchReplaceButtonAll = QPushButton(config.thisTranslation["all"])
-        searchReplaceButtonAll.setToolTip(config.thisTranslation["replaceAll"])
+        self.sendButton = QPushButton(config_manager.get_translation('send'))
+        search_label = QLabel(config_manager.get_translation('searchFor'))
+        replace_label = QLabel(config_manager.get_translation('replaceWith'))
+        search_replace_button = QPushButton(config_manager.get_translation('replace'))
+        search_replace_button.setToolTip(config_manager.get_translation('replaceSelectedText'))
+        search_replace_button_all = QPushButton(config_manager.get_translation('all'))
+        search_replace_button_all.setToolTip(config_manager.get_translation('replaceAll'))
         self.apiModels = QComboBox()
-        self.apiModels.addItems([config.thisTranslation["chat"], config.thisTranslation["image"], "browser", "python", "system"])
+        self.apiModels.addItems([config_manager.get_translation('chat'), config_manager.get_translation('image'), 'browser', 'python', 'system'])
         self.apiModels.setCurrentIndex(0)
         self.apiModel = 0
-        self.newButton = QPushButton(config.thisTranslation["new"])
-        saveButton = QPushButton(config.thisTranslation["save"])
-        self.editableCheckbox = QCheckBox(config.thisTranslation["editable"])
+        self.newButton = QPushButton(config_manager.get_translation('new'))
+        save_button = QPushButton(config_manager.get_translation('save'))
+        self.editableCheckbox = QCheckBox(config_manager.get_translation('editable'))
         self.editableCheckbox.setCheckState(Qt.Unchecked)
-        #self.audioCheckbox = QCheckBox(config.thisTranslation["audio"])
-        #self.audioCheckbox.setCheckState(Qt.Checked if config.chatGPTApiAudio else Qt.Unchecked)
+        # self.audioCheckbox = QCheckBox(config_manager.get_setting("this_translation").audio)
+        # self.audioCheckbox.setCheckState(Qt.Checked if config_manager.get_setting("chatGPTApiAudio") else Qt.Unchecked)
         self.choiceNumber = QComboBox()
         self.choiceNumber.addItems([str(i) for i in range(1, 11)])
-        self.choiceNumber.setCurrentIndex((config.chatGPTApiNoOfChoices - 1))
+        self.choiceNumber.setCurrentIndex(int(config_manager.get_setting('chatGPTApiNoOfChoices')) - 1)
         self.fontSize = QComboBox()
         self.fontSize.addItems([str(i) for i in range(1, 51)])
-        self.fontSize.setCurrentIndex((config.fontSize - 1))
+        self.fontSize.setCurrentIndex(int(config_manager.get_setting('fontSize')) - 1)
         self.temperature = QComboBox()
-        self.temperature.addItems([str(i/10) for i in range(0, 21)])
-        self.temperature.setCurrentIndex(int(config.chatGPTApiTemperature * 10))
-        temperatureLabel = QLabel(config.thisTranslation["temperature"])
-        temperatureLabel.setAlignment(Qt.AlignRight)
-        temperatureLabel.setToolTip("What sampling temperature to use, between 0 and 2. \nHigher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.")
-        choicesLabel = QLabel(config.thisTranslation["choices"])
-        choicesLabel.setAlignment(Qt.AlignRight)
-        choicesLabel.setToolTip("How many chat completion choices to generate for each input message.")
-        fontLabel = QLabel(config.thisTranslation["font"])
-        fontLabel.setAlignment(Qt.AlignRight)
-        fontLabel.setToolTip(config.thisTranslation["fontSize"])
-        promptLayout = QHBoxLayout()
-        userInputLayout = QVBoxLayout()
-        userInputLayout.addWidget(self.userInput)
-        userInputLayout.addWidget(self.userInputMultiline)
+        self.temperature.addItems([str(i / 10) for i in range(21)])
+        self.temperature.setCurrentIndex(int(config_manager.get_setting('chatGPTApiTemperature') * 10))
+        temperature_label = QLabel(config_manager.get_translation('temperature'))
+        temperature_label.setAlignment(Qt.AlignRight)
+        temperature_label.setToolTip('''What sampling temperature to use, between 0 and 2.
+Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.''')
+        choices_label = QLabel(config_manager.get_translation('choices'))
+        choices_label.setAlignment(Qt.AlignRight)
+        choices_label.setToolTip('How many chat completion choices to generate for each input message.')
+        font_label = QLabel(config_manager.get_translation('font'))
+        font_label.setAlignment(Qt.AlignRight)
+        font_label.setToolTip(config_manager.get_translation('fontSize'))
+        prompt_layout = QHBoxLayout()
+        user_input_layout = QVBoxLayout()
+        user_input_layout.addWidget(self.userInput)
+        user_input_layout.addWidget(self.userInputMultiline)
         self.userInputMultiline.hide()
-        promptLayout.addLayout(userInputLayout)
-        if isPocketsphinxInstalled:
-            promptLayout.addWidget(self.voiceCheckbox)
-        promptLayout.addWidget(self.multilineButton)
-        promptLayout.addWidget(self.sendButton)
-        promptLayout.addWidget(self.apiModels)
-        layout000Rt.addLayout(promptLayout)
-        layout000Rt.addWidget(self.contentView)
-        layout000Rt.addWidget(self.progressBar)
+        prompt_layout.addLayout(user_input_layout)
+        # if sphinx_installed:
+        #     prompt_layout.addWidget(self.voiceCheckbox)
+        prompt_layout.addWidget(self.multilineButton)
+        prompt_layout.addWidget(self.sendButton)
+        prompt_layout.addWidget(self.apiModels)
+        lt0r.addLayout(prompt_layout)
+        lt0r.addWidget(self.contentView)
+        lt0r.addWidget(self.progressBar)
         self.progressBar.hide()
-        searchReplaceLayout = QHBoxLayout()
-        searchReplaceLayout.addWidget(searchLabel)
-        searchReplaceLayout.addWidget(self.searchInput)
-        searchReplaceLayout.addWidget(replaceLabel)
-        searchReplaceLayout.addWidget(self.replaceInput)
-        searchReplaceLayout.addWidget(searchReplaceButton)
-        searchReplaceLayout.addWidget(searchReplaceButtonAll)
-        layout000Rt.addLayout(searchReplaceLayout)
-        rtControlLayout = QHBoxLayout()
-        rtControlLayout.addWidget(apiKeyButton)
-        rtControlLayout.addWidget(temperatureLabel)
-        rtControlLayout.addWidget(self.temperature)
-        rtControlLayout.addWidget(choicesLabel)
-        rtControlLayout.addWidget(self.choiceNumber)
-        rtControlLayout.addWidget(fontLabel)
-        rtControlLayout.addWidget(self.fontSize)
-        rtControlLayout.addWidget(self.editableCheckbox)
-        #rtControlLayout.addWidget(self.audioCheckbox)
-        rtButtonLayout = QHBoxLayout()
-        rtButtonLayout.addWidget(self.newButton)
-        rtButtonLayout.addWidget(saveButton)
-        layout000Rt.addLayout(rtControlLayout)
-        layout000Rt.addLayout(rtButtonLayout)
-        
-        #widgets on the left
-        helpButton = QPushButton(config.thisTranslation["help"])
-        searchTitleButton = QPushButton(config.thisTranslation["searchTitle"])
-        searchContentButton = QPushButton(config.thisTranslation["searchContent"])
+        search_replace_layout = QHBoxLayout()
+        search_replace_layout.addWidget(search_label)
+        search_replace_layout.addWidget(self.searchInput)
+        search_replace_layout.addWidget(replace_label)
+        search_replace_layout.addWidget(self.replaceInput)
+        search_replace_layout.addWidget(search_replace_button)
+        search_replace_layout.addWidget(search_replace_button_all)
+        lt0r.addLayout(search_replace_layout)
+        rt_control_layout = QHBoxLayout()
+        rt_control_layout.addWidget(api_key_button)
+        rt_control_layout.addWidget(temperature_label)
+        rt_control_layout.addWidget(self.temperature)
+        rt_control_layout.addWidget(choices_label)
+        rt_control_layout.addWidget(self.choiceNumber)
+        rt_control_layout.addWidget(font_label)
+        rt_control_layout.addWidget(self.fontSize)
+        rt_control_layout.addWidget(self.editableCheckbox)
+        # rtControlLayout.addWidget(self.audioCheckbox)
+        rt_button_layout = QHBoxLayout()
+        rt_button_layout.addWidget(self.newButton)
+        rt_button_layout.addWidget(save_button)
+        lt0r.addLayout(rt_control_layout)
+        lt0r.addLayout(rt_button_layout)
+
+        # widgets on the left
+        help_button = QPushButton(config_manager.get_translation('help'))
+        search_title_button = QPushButton(config_manager.get_translation('searchTitle'))
+        search_content_button = QPushButton(config_manager.get_translation('searchContent'))
         self.searchTitle = QLineEdit()
         self.searchTitle.setClearButtonEnabled(True)
-        self.searchTitle.setPlaceholderText(config.thisTranslation["searchTitleHere"])
+        self.searchTitle.setPlaceholderText(config_manager.get_translation('searchTitleHere'))
         self.searchContent = QLineEdit()
         self.searchContent.setClearButtonEnabled(True)
-        self.searchContent.setPlaceholderText(config.thisTranslation["searchContentHere"])
+        self.searchContent.setPlaceholderText(config_manager.get_translation('searchContentHere'))
         self.listView = QListView()
         self.listModel = QStandardItemModel()
         self.listView.setModel(self.listModel)
-        removeButton = QPushButton(config.thisTranslation["remove"])
-        clearAllButton = QPushButton(config.thisTranslation["clearAll"])
-        searchTitleLayout = QHBoxLayout()
-        searchTitleLayout.addWidget(self.searchTitle)
-        searchTitleLayout.addWidget(searchTitleButton)
-        layout000Lt.addLayout(searchTitleLayout)
-        searchContentLayout = QHBoxLayout()
-        searchContentLayout.addWidget(self.searchContent)
-        searchContentLayout.addWidget(searchContentButton)
-        layout000Lt.addLayout(searchContentLayout)
-        layout000Lt.addWidget(self.listView)
-        ltButtonLayout = QHBoxLayout()
-        ltButtonLayout.addWidget(removeButton)
-        ltButtonLayout.addWidget(clearAllButton)
-        layout000Lt.addLayout(ltButtonLayout)
-        layout000Lt.addWidget(helpButton)
-        
+        remove_button = QPushButton(config_manager.get_translation('remove'))
+        clear_all_button = QPushButton(config_manager.get_translation('clearAll'))
+        search_title_layout = QHBoxLayout()
+        search_title_layout.addWidget(self.searchTitle)
+        search_title_layout.addWidget(search_title_button)
+        lt0l.addLayout(search_title_layout)
+        search_content_layout = QHBoxLayout()
+        search_content_layout.addWidget(self.searchContent)
+        search_content_layout.addWidget(search_content_button)
+        lt0l.addLayout(search_content_layout)
+        lt0l.addWidget(self.listView)
+        lt_button_layout = QHBoxLayout()
+        lt_button_layout.addWidget(remove_button)
+        lt_button_layout.addWidget(clear_all_button)
+        lt0l.addLayout(lt_button_layout)
+        lt0l.addWidget(help_button)
+
         # Connections
-        self.userInput.returnPressed.connect(self.sendMessage)
-        helpButton.clicked.connect(lambda: webbrowser.open("https://github.com/eliranwong/ChatGPT-GUI/wiki"))
-        apiKeyButton.clicked.connect(self.showApiDialog)
-        self.multilineButton.clicked.connect(self.multilineButtonClicked)
-        self.sendButton.clicked.connect(self.sendMessage)
-        saveButton.clicked.connect(self.saveData)
-        self.newButton.clicked.connect(self.newData)
-        searchTitleButton.clicked.connect(self.searchData)
-        searchContentButton.clicked.connect(self.searchData)
-        self.searchTitle.textChanged.connect(self.searchData)
-        self.searchContent.textChanged.connect(self.searchData)
-        self.listView.clicked.connect(self.selectData)
-        clearAllButton.clicked.connect(self.clearData)
-        removeButton.clicked.connect(self.removeData)
-        self.editableCheckbox.stateChanged.connect(self.toggleEditable)
-        #self.audioCheckbox.stateChanged.connect(self.toggleChatGPTApiAudio)
-        self.voiceCheckbox.stateChanged.connect(self.toggleVoiceTyping)
-        self.choiceNumber.currentIndexChanged.connect(self.updateChoiceNumber)
-        self.apiModels.currentIndexChanged.connect(self.updateApiModel)
-        self.fontSize.currentIndexChanged.connect(self.setFontSize)
-        self.temperature.currentIndexChanged.connect(self.updateTemperature)
-        searchReplaceButton.clicked.connect(self.replaceSelectedText)
-        searchReplaceButtonAll.clicked.connect(self.searchReplaceAll)
-        self.searchInput.returnPressed.connect(self.searchChatContent)
-        self.replaceInput.returnPressed.connect(self.replaceSelectedText)
+        self.userInput.returnPressed.connect(self.send_message)
+        help_button.clicked.connect(lambda: webbrowser.open('https://github.com/iroedius/ChatGPTQT/wiki'))
+        api_key_button.clicked.connect(self.show_api_dialog)
+        self.multilineButton.clicked.connect(self.multiline_button_clicked)
+        self.sendButton.clicked.connect(self.send_message)
+        save_button.clicked.connect(self.save_data)
+        self.newButton.clicked.connect(self.new_data)
+        search_title_button.clicked.connect(self.search_data)
+        search_content_button.clicked.connect(self.search_data)
+        self.searchTitle.textChanged.connect(self.search_data)
+        self.searchContent.textChanged.connect(self.search_data)
+        self.listView.clicked.connect(self.select_data)
+        clear_all_button.clicked.connect(self.clear_data)
+        remove_button.clicked.connect(self.remove_data)
+        self.editableCheckbox.stateChanged.connect(self.toggle_editable)
+        # self.audioCheckbox.stateChanged.connect(self.toggleChatGPTApiAudio)
+        # self.voiceCheckbox.stateChanged.connect(self.toggleVoiceTyping)
+        self.choiceNumber.currentIndexChanged.connect(self.update_choise_number)
+        self.apiModels.currentIndexChanged.connect(self.update_api_model)
+        self.fontSize.currentIndexChanged.connect(self.set_font_size)
+        self.temperature.currentIndexChanged.connect(self.update_temperature)
+        search_replace_button.clicked.connect(self.replace_selected_text)
+        search_replace_button_all.clicked.connect(self.search_replace_all)
+        self.searchInput.returnPressed.connect(self.search_chat_content)
+        self.replaceInput.returnPressed.connect(self.replace_selected_text)
 
-        self.setFontSize()
-        self.updateSearchToolTips()
+        self.set_font_size()
+        self.update_search_tool_tips()
 
-    def setFontSize(self, index=None):
+    def set_font_size(self, index: int | None = None) -> None:
         if index is not None:
-            config.fontSize = index + 1
+            config_manager.update_setting('fontSize', str(index + 1))
         # content view
         font = self.contentView.font()
-        font.setPointSize(config.fontSize)
+        font.setPointSize(int(config_manager.get_setting('fontSize')))
         self.contentView.setFont(font)
         # list view
         font = self.listView.font()
-        font.setPointSize(config.fontSize)
+        font.setPointSize(int(config_manager.get_setting('fontSize')))
         self.listView.setFont(font)
 
-    def updateSearchToolTips(self):
-        if config.regexpSearchEnabled:
-            self.searchTitle.setToolTip(config.thisTranslation["matchingRegularExpression"])
-            self.searchContent.setToolTip(config.thisTranslation["matchingRegularExpression"])
-            self.searchInput.setToolTip(config.thisTranslation["matchingRegularExpression"])
+    def update_search_tool_tips(self) -> None:
+        if config_manager.get_setting('regexpSearchEnabled'):
+            self.searchTitle.setToolTip(config_manager.get_translation('matchingRegularExpression'))
+            self.searchContent.setToolTip(config_manager.get_translation('matchingRegularExpression'))
+            self.searchInput.setToolTip(config_manager.get_translation('matchingRegularExpression'))
         else:
-            self.searchTitle.setToolTip("")
-            self.searchContent.setToolTip("")
-            self.searchInput.setToolTip("")
+            self.searchTitle.setToolTip('')
+            self.searchContent.setToolTip('')
+            self.searchInput.setToolTip('')
 
-    def searchChatContent(self):
-        search = QRegularExpression(self.searchInput.text()) if config.regexpSearchEnabled else self.searchInput.text()
+    def search_chat_content(self) -> None:
+        search = QRegularExpression(self.searchInput.text()) if config_manager.get_setting('regexpSearchEnabled') else self.searchInput.text()
         self.contentView.find(search)
 
-    def replaceSelectedText(self):
-        currentSelectedText = self.contentView.textCursor().selectedText()
-        if not currentSelectedText == "":
-            searchInput = self.searchInput.text()
-            replaceInput = self.replaceInput.text()
-            if searchInput:
-                replace = re.sub(searchInput, replaceInput, currentSelectedText) if config.regexpSearchEnabled else currentSelectedText.replace(searchInput, replaceInput)
+    def replace_selected_text(self) -> None:
+        current_selected_text = self.contentView.textCursor().selectedText()
+        if current_selected_text:
+            search_input = self.searchInput.text()
+            replace_input = self.replaceInput.text()
+            if search_input:
+                replace = (
+                    re.sub(search_input, replace_input, current_selected_text)
+                    if config_manager.get_setting('regexpSearchEnabled')
+                    else current_selected_text.replace(search_input, replace_input)
+                )
             else:
                 replace = self.replaceInput.text()
             self.contentView.insertPlainText(replace)
 
-    def searchReplaceAll(self):
+    def search_replace_all(self) -> None:
         search = self.searchInput.text()
         if search:
             replace = self.replaceInput.text()
             content = self.contentView.toPlainText()
-            newContent = re.sub(search, replace, content, flags=re.M) if config.regexpSearchEnabled else content.replace(search, replace)
-            self.contentView.setPlainText(newContent)
+            new_content = re.sub(search, replace, content, flags=re.MULTILINE) if config_manager.get_setting('regexpSearchEnabled') else content.replace(search, replace)
+            self.contentView.setPlainText(new_content)
 
-    def multilineButtonClicked(self):
+    def multiline_button_clicked(self) -> None:
         if self.userInput.isVisible():
             self.userInput.hide()
             self.userInputMultiline.setPlainText(self.userInput.text())
             self.userInputMultiline.show()
-            self.multilineButton.setText("-")
+            self.multilineButton.setText('-')
         else:
             self.userInputMultiline.hide()
             self.userInput.setText(self.userInputMultiline.toPlainText())
             self.userInput.show()
-            self.multilineButton.setText("+")
-        self.setUserInputFocus()
+            self.multilineButton.setText('+')
+        self.set_uset_input_focus()
 
-    def setUserInputFocus(self):
+    def set_uset_input_focus(self) -> None:
         self.userInput.setFocus() if self.userInput.isVisible() else self.userInputMultiline.setFocus()
 
-    def showApiDialog(self):
+    def show_api_dialog(self) -> None:
         dialog = ApiDialog(self)
-        result = dialog.exec() if config.qtLibrary == "pyside6" else dialog.exec_()
+        result = dialog.exec()
         if result == QDialog.Accepted:
-            config.openaiApiKey = dialog.api_key()
+            config_manager.update_setting('openaiApiKey', dialog.api_key())
             if not openai.api_key:
-                openai.api_key = os.environ["OPENAI_API_KEY"] = config.openaiApiKey
-            config.openaiApiOrganization = dialog.org()
+                openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openaiApiKey')
+            config_manager.update_setting('openaiApiOrganization', dialog.org())
             try:
-                config.chatGPTApiMaxTokens = int(dialog.max_token())
-                if config.chatGPTApiMaxTokens < 20:
-                    config.chatGPTApiMaxTokens = 20
-            except:
-                pass
+                config_manager.update_setting('chatGPTApiMaxTokens', dialog.max_token())
+                min_value = 20
+                if int(config_manager.get_setting('chatGPTApiMaxTokens')) < min_value:
+                    config_manager.update_setting('chatGPTApiMaxTokens', str(min_value))
+            except Exception:
+                logging.exception('Exception while updating chatGPTApiMaxTokens')
             try:
-                config.maximumInternetSearchResults = int(dialog.max_internet_search_results())
-                if config.maximumInternetSearchResults <= 0:
-                    config.maximumInternetSearchResults = 1
-                elif config.maximumInternetSearchResults > 100:
-                    config.maximumInternetSearchResults = 100
-            except:
-                pass
-            #config.includeDuckDuckGoSearchResults = dialog.include_internet_searches()
-            config.chatGPTApiAutoScrolling = dialog.enable_auto_scrolling()
-            config.runPythonScriptGlobally = dialog.enable_runPythonScriptGlobally()
-            config.chatAfterFunctionCalled = dialog.enable_chatAfterFunctionCalled()
-            config.chatGPTApiModel = dialog.apiModel()
-            config.chatGPTApiFunctionCall = dialog.functionCalling()
-            config.loadingInternetSearches = dialog.loadingInternetSearches()
-            internetSeraches = "integrate google searches"
-            if config.loadingInternetSearches == "auto" and internetSeraches in config.chatGPTPluginExcludeList:
-                config.chatGPTPluginExcludeList.remove(internetSeraches)
+                config_manager.update_setting('maximumInternetSearchResults', dialog.max_internet_search_results())
+                max_value = 100
+                if int(config_manager.get_setting('maximumInternetSearchResults')) <= 0:
+                    config_manager.update_setting('maximumInternetSearchResults', '1')
+                elif int(config_manager.get_setting('maximumInternetSearchResults')) > max_value:
+                    config_manager.update_setting('maximumInternetSearchResults', str(max_value))
+            except Exception:
+                logging.exception('Exception while getting maximumInternetSearchResults')
+            # config_manager.update_setting("includeDuckDuckGoSearchResults") = dialog.include_internet_searches()
+            config_manager.update_setting('chatGPTApiAutoScrolling', dialog.enable_auto_scrolling())
+            config_manager.update_setting('runPythonScriptGlobally', dialog.enable_run_python_script_globally())
+            config_manager.update_setting('chatAfterFunctionCalled', dialog.enable_chat_after_function_called())
+            config_manager.update_setting('chatGPTApiModel', dialog.api_model())
+            config_manager.update_setting('chatGPTApiFunctionCall', dialog.function_calling())
+            config_manager.update_setting('loadingInternetSearches', dialog.loading_internet_searches())
+            internet_searches = 'integrate google searches'
+            if config_manager.get_setting('loadingInternetSearches') == 'auto' and internet_searches in config_manager.get_setting('chatGPTPluginExcludeList'):
+                config_manager.update_setting('chatGPTPluginExcludeList.remove', internet_searches)
                 self.parent.reloadMenubar()
-            elif config.loadingInternetSearches == "none" and not internetSeraches in config.chatGPTPluginExcludeList:
-                config.chatGPTPluginExcludeList.append(internetSeraches)
+            elif config_manager.get_setting('loadingInternetSearches') == 'none' and internet_searches not in config_manager.get_setting(chatGPTPluginExcludeList):
+                config_manager.update_setting('chatGPTPluginExcludeList.append', internet_searches)
                 self.parent.reloadMenubar()
-            self.runPlugins()
-            config.chatGPTApiPredefinedContext = dialog.predefinedContext()
-            config.chatGPTApiContextInAllInputs = dialog.contextInAllInputs()
-            config.chatGPTApiContext = dialog.context()
-            #config.chatGPTApiAudioLanguage = dialog.language()
-            self.newData()
+            self.run_plugins()
+            config_manager.update_setting('chatGPTApiPredefinedContext', dialog.predefined_context())
+            config_manager.update_setting('chatGPTApiContextInAllInputs', dialog.context_in_all_inputs())
+            config_manager.update_setting('chatGPTApiContext', dialog.context())
+            # config_manager.get_setting("chatGPTApiAudioLanguage") = dialog.language()
+            self.new_data()
 
-    def updateApiModel(self, index):
+    def update_api_model(self, index: int) -> None:
         self.apiModel = index
 
-    def updateTemperature(self, index):
-        config.chatGPTApiTemperature = float(index / 10)
+    def update_temperature(self, index: int) -> None:
+        config_manager.update_setting('chatGPTApiTemperature', float(index / 10))
 
-    def updateChoiceNumber(self, index):
-        config.chatGPTApiNoOfChoices = index + 1
+    def update_choise_number(self, index: int) -> None:
+        config_manager.update_setting('chatGPTApiNoOfChoices', index + 1)
 
-    def onPhraseRecognized(self, phrase):
-        self.userInput.setText(f"{self.userInput.text()} {phrase}")
+    def on_phrase_recognized(self, phrase: str) -> None:
+        self.userInput.setText(f'{self.userInput.text()} {phrase}')
 
-    def toggleVoiceTyping(self, state):
-        self.recognitionThread.start() if state else self.recognitionThread.stop()
+    # def toggleVoiceTyping(self, state) -> None:
+    #     self.recognitionThread.start() if state else self.recognitionThread.stop()
 
-    def toggleEditable(self, state):
+    def toggle_editable(self, state: bool) -> None:
         self.contentView.setReadOnly(not state)
 
-    def toggleChatGPTApiAudio(self, state):
-        config.chatGPTApiAudio = state
-        if not config.chatGPTApiAudio:
-            self.closeMediaPlayer()
+    def toggle_chatgpt_api_audio(self, state: bool) -> None:
+        config_manager.update_setting('chatGPTApiAudio', state)
+        if not config_manager.get_setting('chatGPTApiAudio'):
+            self.close_media_player()
 
-    def noTextSelection(self):
-        self.displayMessage("This feature works on text selection. Select text first!")
+    def no_text_selection(self) -> None:
+        self.display_message('This feature works on text selection. Select text first!')
 
-    def validate_url(self, url):
+    def validate_url(self, url: str) -> bool:
         try:
             result = urllib.parse.urlparse(url)
             return all([result.scheme, result.netloc])
         except ValueError:
             return False
 
-    def webBrowse(self, userInput=""):
-        if not userInput:
-            userInput = self.contentView.textCursor().selectedText().strip()
-        if not userInput:
-            self.noTextSelection()
+    def web_browse(self, user_input: str = '') -> None:
+        if not user_input:
+            user_input = self.contentView.textCursor().selectedText().strip()
+        if not user_input:
+            self.no_text_selection()
             return
-        if self.validate_url(userInput):
-            url = userInput
+        if self.validate_url(user_input):
+            url = user_input
         else:
-            userInput = urllib.parse.quote(userInput)
-            url = f"https://www.google.com/search?q={userInput}"
+            user_input = urllib.parse.quote(user_input)
+            url = f'https://www.google.com/search?q={user_input}'
         webbrowser.open(url)
 
-    def displayText(self, text):
-        self.saveData()
-        self.newData()
+    def display_text(self, text: str) -> None:
+        self.save_data()
+        self.new_data()
         self.contentView.setPlainText(text)
 
-    def runSystemCommand(self, command=""):
+    def run_system_command(self, command: str = '') -> None:
         if not command:
             command = self.contentView.textCursor().selectedText().strip()
         if command:
             command = repr(command)
-            command = eval(command).replace("\u2029", "\n")
+            command = literal_eval(command).replace('\u2029', '\n')
         else:
-            self.noTextSelection()
+            self.no_text_selection()
             return
-        
+
         # display output only, without error
-        #output = subprocess.check_output(command, shell=True, text=True)
-        #self.displayText(output)
+        # output = subprocess.check_output(command, shell=True, text=True)
+        # self.displayText(output)
 
         # display both output and error
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)  # noqa: S602
         output = result.stdout  # Captured standard output
         error = result.stderr  # Captured standard error
-        self.displayText(f"> {command}")
-        self.contentView.appendPlainText(f"\n{output}")
+        self.display_text(f'> {command}')
+        self.contentView.appendPlainText(f'\n{output}')
         if error.strip():
-            self.contentView.appendPlainText("\n# Error\n")
+            self.contentView.appendPlainText('\n# Error\n')
             self.contentView.appendPlainText(error)
 
-    def runPythonCommand(self, command=""):
+    def run_python_command(self, command: str = '') -> None:
         if not command:
             command = self.contentView.textCursor().selectedText().strip()
         if command:
             command = repr(command)
-            command = eval(command).replace("\u2029", "\n")
+            command = literal_eval(command).replace('\u2029', '\n')
         else:
-            self.noTextSelection()
+            self.no_text_selection()
             return
 
         # Store the original standard output
@@ -748,9 +800,9 @@ class ChatGPTAPI(QWidget):
             sys.stdout = output
             # Execute the Python string in global namespace
             try:
-                exec(command, globals()) if config.runPythonScriptGlobally else exec(command)
+                exec(command, globals()) if config_manager.get_setting('runPythonScriptGlobally') else exec(command)
                 captured_output = output.getvalue()
-            except:
+            except Exception:
                 captured_output = traceback.format_exc()
             # Get the captured output
         finally:
@@ -759,42 +811,54 @@ class ChatGPTAPI(QWidget):
 
         # Display the captured output
         if captured_output.strip():
-            self.displayText(captured_output)
+            self.display_text(captured_output)
         else:
-            self.displayMessage("Done!")
+            self.display_message('Done!')
 
-    def removeData(self):
+    def remove_data(self) -> None:
         index = self.listView.selectedIndexes()
         if not index:
             return
-        confirm = QMessageBox.question(self, config.thisTranslation["remove"], config.thisTranslation["areyousure"], QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        confirm = QMessageBox.question(
+            self,
+            config_manager.get_translation('remove'),
+            config_manager.get_translation('areyousure'),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
         if confirm == QMessageBox.Yes:
             item = index[0]
             data = item.data(Qt.UserRole)
             self.database.delete(data[0])
-            self.loadData()
-            self.newData()
+            self.load_data()
+            self.new_data()
 
-    def clearData(self):
-        confirm = QMessageBox.question(self, config.thisTranslation["clearAll"], config.thisTranslation["areyousure"], QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    def clear_data(self) -> None:
+        confirm = QMessageBox.question(
+            self,
+            config_manager.get_translation('clearAll'),
+            config_manager.get_translation('areyousure'),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
         if confirm == QMessageBox.Yes:
             self.database.clear()
-            self.loadData()
+            self.load_data()
 
-    def saveData(self):
+    def save_data(self) -> None:
         text = self.contentView.toPlainText().strip()
         if text:
-            lines = text.split("\n")
+            lines = text.split('\n')
             if not self.contentID:
-                self.contentID = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-            title = re.sub("^>>> ", "", lines[0][:50])
+                self.contentID = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            title = re.sub('^>>> ', '', lines[0][:50])
             content = text
             self.database.insert(self.contentID, title, content)
-            self.loadData()
+            self.load_data()
 
-    def loadData(self):
+    def load_data(self) -> None:
         # reverse the list, so that the latest is on the top
-        self.data_list = self.database.search("", "")
+        self.data_list = self.database.search('', '')
         if self.data_list:
             self.data_list.reverse()
         self.listModel.clear()
@@ -804,7 +868,7 @@ class ChatGPTAPI(QWidget):
             item.setData(data, Qt.UserRole)
             self.listModel.appendRow(item)
 
-    def searchData(self):
+    def search_data(self) -> None:
         keyword1 = self.searchTitle.text().strip()
         keyword2 = self.searchContent.text().strip()
         self.data_list = self.database.search(keyword1, keyword2)
@@ -814,35 +878,38 @@ class ChatGPTAPI(QWidget):
             item.setData(data, Qt.UserRole)
             self.listModel.appendRow(item)
 
-    def bibleChatAction(self, context=""):
+    def chat_action(self, context: str = '') -> None:
         if context:
-            config.chatGPTApiPredefinedContext = context
-        currentSelectedText = self.contentView.textCursor().selectedText().strip()
-        if currentSelectedText:
-            self.newData()
-            self.userInput.setText(currentSelectedText)
-            self.sendMessage()
+            config_manager.update_setting('chatGPTApiPredefinedContext', context)
+        current_selected_text = self.contentView.textCursor().selectedText().strip()
+        if current_selected_text:
+            self.new_data()
+            self.userInput.setText(current_selected_text)
+            self.send_message()
 
-
-    def newData(self):
+    def new_data(self) -> None:
         if not self.busyLoading:
-            self.contentID = ""
-            self.contentView.setPlainText("" if openai.api_key else """OpenAI API Key is NOT Found!
+            self.contentID = ''
+            self.contentView.setPlainText(
+                ''
+                if openai.api_key
+                else '''OpenAI API Key is NOT Found!
 
 Follow the following steps:
 1) Register and get your OpenAI Key at https://platform.openai.com/account/api-keys
-2) Click the "Settings" button below and enter your own OpenAI API key""")
-            self.setUserInputFocus()
+2) Click the "Settings" button below and enter your own OpenAI API key''',
+            )
+            self.set_uset_input_focus()
 
-    def selectData(self, index):
+    def select_data(self, index: QModelIndex) -> None:
         if not self.busyLoading:
             data = index.data(Qt.UserRole)
             self.contentID = data[0]
             content = data[2]
             self.contentView.setPlainText(content)
-            self.setUserInputFocus()
+            self.set_uset_input_focus()
 
-    def printData(self):
+    def print_data(self) -> None:
         # Get the printer and print dialog
         printer = QPrinter()
         dialog = QPrintDialog(printer, self)
@@ -853,541 +920,522 @@ Follow the following steps:
             document.setPlainText(self.contentView.toPlainText())
             document.print_(printer)
 
-    def exportData(self):
+    def export_data(self) -> None:
         # Show a file dialog to get the file path to save
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        filePath, _ = QFileDialog.getSaveFileName(self, "Export Chat Content", os.path.join(wd, "chats", "chat.txt"), "Text Files (*.txt);;Python Files (*.py);;All Files (*)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Chat Content', os.path.join(wd, 'chats', 'chat.txt'), 'Text Files (*.txt);;Python Files (*.py);;All Files (*)', options=options,
+        )
 
         # If the user selects a file path, save the file
-        if filePath:
-            with open(filePath, "w", encoding="utf-8") as fileObj:
-                fileObj.write(self.contentView.toPlainText().strip())
+        if file_path:
+            with Path(file_path).open('w', encoding='utf-8') as file_obj:
+                file_obj.write(self.contentView.toPlainText().strip())
 
-    def openTextFileDialog(self):
+    def open_text_file_dialog(self) -> None:
         options = QFileDialog.Options()
-        fileName, filtr = QFileDialog.getOpenFileName(self,
-                                                      "Open Text File",
-                                                      "Text File",
-                                                      "Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)",
-                                                      "", options)
-        if fileName:
-            with open(fileName, "r", encoding="utf-8") as fileObj:
-                self.displayText(fileObj.read())
+        file_name, filtr = QFileDialog.getOpenFileName(self, 'Open Text File', 'Text File', 'Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)', '', options)
+        if file_name:
+            with Path(file_name).open('r', encoding='utf-8') as file_obj:
+                self.display_text(file_obj.read())
 
-    def displayMessage(self, message="", title="ChatGPT-GUI"):
+    def display_message(self, message: str = '', title: str = 'ChatGPTQT') -> None:
         QMessageBox.information(self, title, message)
 
     # The following method was modified from source:
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-    def num_tokens_from_messages(self, model=""):
+    def num_tokens_from_messages(self, model: str = '') -> int | None:
         if not model:
-            model = config.chatGPTApiModel
-        userInput = self.userInput.text().strip()
-        messages = self.getMessages(userInput)
+            model = config_manager.get_setting('chatGPTApiModel')
+        user_input = self.userInput.text().strip()
+        messages = self.get_messages(user_input)
 
-        """Return the number of tokens used by a list of messages."""
+        '''Return the number of tokens used by a list of messages.'''
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
-            print("Warning: model not found. Using cl100k_base encoding.")
-            encoding = tiktoken.get_encoding("cl100k_base")
-        #encoding = tiktoken.get_encoding("cl100k_base")
-        if model in {
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-0613",
-            "gpt-3.5-turbo-16k",
-            "gpt-3.5-turbo-16k-0613",
-            "gpt-4-0314",
-            "gpt-4-32k-0314",
-            "gpt-4",
-            "gpt-4-0613",
-            "gpt-4-32k",
-            "gpt-4-32k-0613",
-            }:
+            print('Warning: model not found. Using cl100k_base encoding.')
+            encoding = tiktoken.get_encoding('cl100k_base')
+        # encoding = tiktoken.get_encoding("cl100k_base")
+        if model in {'gpt-4-turbo-preview', 'gpt-4-0125-preview', 'gpt-4-1106-preview', 'gpt-3.5-turbo', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106'}:
             tokens_per_message = 3
             tokens_per_name = 1
-        elif model == "gpt-3.5-turbo-0301":
-            tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
-            tokens_per_name = -1  # if there's a name, the role is omitted
-        elif "gpt-3.5-turbo" in model:
-            #print("Warning: gpt-3.5-turbo may update over time. Returning num tokens assuming gpt-3.5-turbo-0613.")
-            return self.num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613")
-        elif "gpt-4" in model:
-            #print("Warning: gpt-4 may update over time. Returning num tokens assuming gpt-4-0613.")
-            return self.num_tokens_from_messages(messages, model="gpt-4-0613")
+        elif model in {'gpt-4', 'gpt-4-0613'}:
+            # print("Warning: gpt-4 may update over time. Returning num tokens assuming gpt-4-0613.")
+            return self.num_tokens_from_messages(messages, model='gpt-4-0613')
         else:
+            msg = (
+                f'''num_tokens_from_messages() is not implemented for model {model}.
+                See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.'''
+            )
             raise NotImplementedError(
-                f"""num_tokens_from_messages() is not implemented for model {model}. See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens."""
+                msg,
             )
         num_tokens = 0
         for message in messages:
             num_tokens += tokens_per_message
             for key, value in message.items():
                 num_tokens += len(encoding.encode(value))
-                if key == "name":
+                if key == 'name':
                     num_tokens += tokens_per_name
         num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
-        #return num_tokens
-        self.displayMessage(message=f"{num_tokens} prompt tokens counted!")
+        # return num_tokens
+        self.display_message(message=f'{num_tokens} prompt tokens counted!')
+        return None
 
-    def getContext(self):
-        if not config.chatGPTApiPredefinedContext in config.predefinedContexts:
-            config.chatGPTApiPredefinedContext = "[none]"
-        if config.chatGPTApiPredefinedContext == "[none]":
+    def get_context(self) -> str:
+        if config_manager.get_setting('chatGPTApiPredefinedContext') not in config_manager.get_setting('predefinedContexts'):
+            config_manager.update_setting('chatGPTApiPredefinedContext', '[none]')
+        if config_manager.get_setting('chatGPTApiPredefinedContext') == '[none]':
             # no context
-            context = ""
-        elif config.chatGPTApiPredefinedContext == "[custom]":
+            context = ''
+        elif config_manager.get_setting('chatGPTApiPredefinedContext') == '[custom]':
             # custom input in the settings dialog
-            context = config.chatGPTApiContext
+            context = config_manager.get_setting('chatGPTApiContext')
         else:
-            # users can modify config.predefinedContexts via plugins
-            context = config.predefinedContexts[config.chatGPTApiPredefinedContext]
+            # users can modify config_manager.get_setting("predefinedContexts") via plugins
+            context = config_manager.get_internal('predefinedContexts')[config_manager.get_setting('chatGPTApiPredefinedContext')]
             # change config for particular contexts
-            if config.chatGPTApiPredefinedContext == "Execute Python Code":
-                if config.chatGPTApiFunctionCall == "none":
-                    config.chatGPTApiFunctionCall = "auto"
-                if config.loadingInternetSearches == "always":
-                    config.loadingInternetSearches = "auto"
+            if config_manager.get_setting('chatGPTApiPredefinedContext') == 'Execute Python Code':
+                if config_manager.get_setting('chatGPTApiFunctionCall') == 'none':
+                    config_manager.get_setting('chatGPTApiFunctionCall', 'auto')
+                if config_manager.get_setting('loadingInternetSearches') == 'always':
+                    config_manager.get_setting('loadingInternetSearches', 'auto')
         return context
 
-    def getMessages(self, userInput):
+    def get_messages(self, user_input: str) -> list:
         # system message
-        systemMessage = "You’re a kind helpful assistant."
-        if config.chatGPTApiFunctionCall == "auto" and config.chatGPTApiFunctionSignatures:
-            systemMessage += " Only use the functions you have been provided with."
-        messages = [
-            {"role": "system", "content": systemMessage}
-        ]
+        system_message = "You're a kind helpful assistant."
+        if config_manager.get_setting('chatGPTApiFunctionCall') == 'auto' and config_manager.get_setting('chatGPTApiFunctionSignatures'):
+            system_message += ' Only use the functions you have been provided with.'
+        messages = [{'role': 'system', 'content': system_message}]
         # predefine context
-        context = self.getContext()
+        context = self.get_context()
         # chat history
         history = self.contentView.toPlainText().strip()
         if history:
-            if context and not config.chatGPTApiPredefinedContext == "Execute Python Code" and not config.chatGPTApiContextInAllInputs:
-                messages.append({"role": "assistant", "content": context})
-            if history.startswith(">>> "):
+            if (
+                context
+                and config_manager.get_setting('chatGPTApiPredefinedContext') != 'Execute Python Code'
+                and not config_manager.get_setting('chatGPTApiContextInAllInputs')
+            ):
+                messages.append({'role': 'assistant', 'content': context})
+            if history.startswith('>>> '):
                 history = history[4:]
-            exchanges = [exchange for exchange in history.split("\n>>> ") if exchange.strip()]
+            exchanges = [exchange for exchange in history.split('\n>>> ') if exchange.strip()]
             for exchange in exchanges:
-                qa = exchange.split("\n~~~ ")
+                qa = exchange.split('\n~~~ ')
                 for i, content in enumerate(qa):
                     if i == 0:
-                        messages.append({"role": "user", "content": content.strip()})
+                        messages.append({'role': 'user', 'content': content.strip()})
                     else:
-                        messages.append({"role": "assistant", "content": content.strip()})
+                        messages.append({'role': 'assistant', 'content': content.strip()})
         # customise chat context
-        if context and (config.chatGPTApiPredefinedContext == "Execute Python Code" or (not history or (history and config.chatGPTApiContextInAllInputs))):
-            #messages.append({"role": "assistant", "content": context})
-            userInput = f"{context}\n{userInput}"
+        if context and (
+            config_manager.get_setting('chatGPTApiPredefinedContext') == 'Execute Python Code'
+            or (not history or (history and config_manager.get_setting('chatGPTApiContextInAllInputs')))
+        ):
+            # messages.append({"role": "assistant", "content": context})
+            user_input = f'{context}\n{user_input}'
         # user input
-        messages.append({"role": "user", "content": userInput})
+        messages.append({'role': 'user', 'content': user_input})
         return messages
 
-    def print(self, text):
-        self.contentView.appendPlainText(f"\n{text}" if self.contentView.toPlainText() else text)
-        self.contentView.setPlainText(re.sub("\n\n[\n]+?([^\n])", r"\n\n\1", self.contentView.toPlainText()))
+    def print(self, text: str) -> None:
+        self.contentView.appendPlainText(f'\n{text}' if self.contentView.toPlainText() else text)
+        self.contentView.setPlainText(re.sub('\n\n[\n]+?([^\n])', r'\n\n\1', self.contentView.toPlainText()))
 
-    def printStream(self, text):
+    # FIXME: transformers
+    def print_stream(self, text: str) -> None:
         # transform responses
-        for t in config.chatGPTTransformers:
-            text = t(text)
+        # for t in config_manager.get_internal('chatGPTTransformers'):
+        #     text = t(text)
         self.contentView.setPlainText(self.contentView.toPlainText() + text)
         # no audio for streaming tokens
-        #if config.chatGPTApiAudio:
-        #    self.playAudio(text)
+        # if config_manager.get_setting("chatGPTApiAudio"):
+        #    self.play_audio(text)
         # scroll to the bottom
-        if config.chatGPTApiAutoScrolling:
-            contentScrollBar = self.contentView.verticalScrollBar()
-            contentScrollBar.setValue(contentScrollBar.maximum())
+        if config_manager.get_setting('chatGPTApiAutoScrolling'):
+            content_scroll_bar = self.contentView.verticalScrollBar()
+            content_scroll_bar.setValue(content_scroll_bar.maximum())
 
-    def sendMessage(self):
+    def send_message(self) -> None:
         if self.userInputMultiline.isVisible():
-            self.multilineButtonClicked()
+            self.multiline_button_clicked()
         if self.apiModel == 0:
-            self.getResponse()
+            self.get_response()
         elif self.apiModel == 1:
-            self.getImage()
+            self.get_image()
         elif self.apiModel == 2:
-            userInput = self.userInput.text().strip()
-            if userInput:
-                self.webBrowse(userInput)
+            user_input = self.userInput.text().strip()
+            if user_input:
+                self.web_browse(user_input)
         elif self.apiModel == 3:
-            userInput = self.userInput.text().strip()
-            if userInput:
-                self.runPythonCommand(userInput)
+            user_input = self.userInput.text().strip()
+            if user_input:
+                self.run_python_command(user_input)
         elif self.apiModel == 4:
-            userInput = self.userInput.text().strip()
-            if userInput:
-                self.runSystemCommand(userInput)
+            user_input = self.userInput.text().strip()
+            if user_input:
+                self.run_system_command(user_input)
 
-    def getImage(self):
+    def get_image(self) -> None:
         if not self.progressBar.isVisible():
-            userInput = self.userInput.text().strip()
-            if userInput:
+            user_input = self.userInput.text().strip()
+            if user_input:
                 self.userInput.setDisabled(True)
-                self.progressBar.show() # show progress bar
-                OpenAIImage(self).workOnGetResponse(userInput)
+                self.progressBar.show()  # show progress bar
+                OpenAIImage(self).work_on_get_response(user_input)
 
-    def displayImage(self, imageUrl):
-        if imageUrl:
-            webbrowser.open(imageUrl)
+    def display_image(self, image_url: str) -> None:
+        if image_url:
+            webbrowser.open(image_url)
             self.userInput.setEnabled(True)
             self.progressBar.hide()
 
-    def getResponse(self):
-        if self.progressBar.isVisible() and config.chatGPTApiNoOfChoices == 1:
-            stop_file = ".stop_chatgpt"
-            if not os.path.isfile(stop_file):
-                open(stop_file, "a", encoding="utf-8").close()
+    def get_response(self) -> None:
+        if self.progressBar.isVisible() and config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
+            stop_file = '.stop_chatgpt'
+            if not Path(stop_file).is_file():
+                Path(stop_file).open('a').close()
         elif not self.progressBar.isVisible():
-            userInput = self.userInput.text().strip()
-            if userInput:
+            user_input = self.userInput.text().strip()
+            if user_input:
                 self.userInput.setDisabled(True)
-                if config.chatGPTApiNoOfChoices == 1:
-                    self.sendButton.setText(config.thisTranslation["stop"])
+                if config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
+                    self.sendButton.setText(config_manager.get_translation('stop'))
                     self.busyLoading = True
                     self.listView.setDisabled(True)
                     self.newButton.setDisabled(True)
-                messages = self.getMessages(userInput)
-                self.print(f">>> {userInput}")
-                self.saveData()
+                messages = self.get_messages(user_input)
+                self.print(f'>>> {user_input}')
+                self.save_data()
                 self.currentLoadingID = self.contentID
                 self.currentLoadingContent = self.contentView.toPlainText().strip()
-                self.progressBar.show() # show progress bar
-                ChatGPTResponse(self).workOnGetResponse(messages) # get chatGPT response in a separate thread
+                self.progressBar.show()  # show progress bar
+                ChatGPTResponse(self).work_on_get_response(messages)  # get chatGPT response in a separate thread
 
-    def fileNamesWithoutExtension(self, dir, ext):
-        files = glob.glob(os.path.join(dir, "*.{0}".format(ext)))
-        return sorted([file[len(dir)+1:-(len(ext)+1)] for file in files if os.path.isfile(file)])
+    def file_names_without_extension(self, _dir: str, ext: str) -> None:
+        files = glob.glob(os.path.join(_dir, f'*.{ext}'))
+        return sorted([file[len(_dir) + 1 : -(len(ext) + 1)] for file in files if os.path.isfile(file)])
 
-    def execPythonFile(self, script):
-        if config.developer:
-            with open(script, 'r', encoding='utf8') as f:
+    def exec_python_file(self, script) -> None:
+        if config_manager.get_setting('developer'):
+            with open(script, encoding='utf8') as f:
                 code = compile(f.read(), script, 'exec')
                 exec(code, globals())
         else:
             try:
-                with open(script, 'r', encoding='utf8') as f:
+                with open(script, encoding='utf8') as f:
                     code = compile(f.read(), script, 'exec')
                     exec(code, globals())
-            except:
-                print("Failed to run '{0}'!".format(os.path.basename(script)))
+            except Exception:
+                msg = f'Failed to run "{Path(script).name}"!'
+                logging.exception(msg)
+                print(msg)
 
-    def runPlugins(self):
+    def run_plugins(self) -> None:
         # The following config values can be modified with plugins, to extend functionalities
-        config.predefinedContexts = {
-            "[none]": "",
-            "[custom]": "",
-        }
-        config.inputSuggestions = []
-        config.chatGPTTransformers = []
-        config.chatGPTApiFunctionSignatures = []
-        config.chatGPTApiAvailableFunctions = {}
+        config_manager.update_internal('predefinedContexts', '"[none]": "", "[custom]": ""')
+        config_manager.update_internal('inputSuggestions', [])
+        config_manager.update_internal('chatGPTTransformers', [])
+        config_manager.update_internal('chatGPTApiFunctionSignatures', [])
+        config_manager.update_internal('chatGPTApiAvailableFunctions', {})
 
-        pluginFolder = os.path.join(os.getcwd(), "plugins")
+        plugin_folder = Path.cwd() / 'plugins'
         # always run 'integrate google searches'
-        internetSeraches = "integrate google searches"
-        script = os.path.join(pluginFolder, "{0}.py".format(internetSeraches))
-        self.execPythonFile(script)
-        for plugin in self.fileNamesWithoutExtension(pluginFolder, "py"):
-            if not plugin == internetSeraches and not plugin in config.chatGPTPluginExcludeList:
-                script = os.path.join(pluginFolder, "{0}.py".format(plugin))
-                self.execPythonFile(script)
-        if internetSeraches in config.chatGPTPluginExcludeList:
-            del config.chatGPTApiFunctionSignatures[0]
+        internet_searches = 'integrate google searches'
+        script = plugin_folder / f'{internet_searches}.py'
+        self.exec_python_file(script)
+        for plugin in self.file_names_without_extension(plugin_folder, 'py'):
+            if plugin != internet_searches and plugin not in config_manager.get_setting('chatGPTPluginExcludeList'):
+                script = plugin_folder / f'{plugin}.py'
+                self.exec_python_file(script)
+        # if internetSeraches in config_manager.get_setting("chatGPTPluginExcludeList"):
+        #     config_manager.update_setting("chatGPTApiFunctionSignatures[0], ''")
 
-    def processResponse(self, responses):
+    # FIXME: transformers
+    def process_response(self, responses: str) -> None:
         if responses:
             # reload the working content in case users change it during waiting for response
             self.contentID = self.currentLoadingID
             self.contentView.setPlainText(self.currentLoadingContent)
-            self.currentLoadingID = self.currentLoadingContent = ""
+            self.currentLoadingID = self.currentLoadingContent = ''
             # transform responses
-            for t in config.chatGPTTransformers:
-                responses = t(responses)
+            # for t in config_manager.get_setting('chatGPTTransformers'):
+            #     responses = t(responses)
             # update new reponses
             self.print(responses)
             # scroll to the bottom
-            if config.chatGPTApiAutoScrolling:
-                contentScrollBar = self.contentView.verticalScrollBar()
-                contentScrollBar.setValue(contentScrollBar.maximum())
-            #if not (responses.startswith("OpenAI API re") or responses.startswith("Failed to connect to OpenAI API:")) and config.chatGPTApiAudio:
-            #        self.playAudio(responses)
+            if config_manager.get_setting('chatGPTApiAutoScrolling'):
+                content_scroll_bar = self.contentView.verticalScrollBar()
+                content_scroll_bar.setValue(content_scroll_bar.maximum())
+            # if not (responses.startswith("OpenAI API re") or responses.startswith("Failed to connect to OpenAI API:")) and config_manager.get_setting("chatGPTApiAudio"):
+            #        self.play_audio(responses)
         # empty user input
-        self.userInput.setText("")
+        self.userInput.setText('')
         # auto-save
-        self.saveData()
+        self.save_data()
         # hide progress bar
         self.userInput.setEnabled(True)
-        if config.chatGPTApiNoOfChoices == 1:
+        if config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
             self.listView.setEnabled(True)
             self.newButton.setEnabled(True)
             self.busyLoading = False
-        self.sendButton.setText(config.thisTranslation["send"])
+        self.sendButton.setText(config_manager.get_translation('send'))
         self.progressBar.hide()
-        self.setUserInputFocus()
+        self.set_uset_input_focus()
 
-    def playAudio(self, responses):
-        textList = [i.replace(">>>", "").strip() for i in responses.split("\n") if i.strip()]
-        audioFiles = []
-        for index, text in enumerate(textList):
-            try:
-                audioFile = os.path.abspath(os.path.join("temp", f"gtts_{index}.mp3"))
-                if os.path.isfile(audioFile):
-                    os.remove(audioFile)
-                gTTS(text=text, lang=config.chatGPTApiAudioLanguage if config.chatGPTApiAudioLanguage else "en").save(audioFile)
-                audioFiles.append(audioFile)
-            except:
-                pass
-        if audioFiles:
-            self.playAudioBibleFilePlayList(audioFiles)
-    
-    def playAudioBibleFilePlayList(self, files):
+    def play_audio(self, responses: str) -> None:
+        text_list = [i.replace('>>>', '').strip() for i in responses.split('\n') if i.strip()]
+        audio_files = []
+        for index, text in enumerate(text_list):
+            with contextlib.suppress(Exception):
+                audio_file = (Path('temp') / f'gtts_{index}.mp3').resolve()
+                if audio_file.is_file():
+                    audio_file.unlink()
+                gTTS(text=text, lang=config_manager.get_setting('chatGPTApiAudioLanguage') or 'en').save(
+                    audio_file,
+                )
+                audio_files.append(audio_file)
+        if audio_files:
+            self.play_audio_files(audio_files)
+
+    def play_audio_files(self, files: list[str]) -> None:
         pass
 
-    def closeMediaPlayer(self):
+    def close_media_player(self) -> None:
         pass
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.initUI()
+        self.init_ui()
 
-    def reloadMenubar(self):
+    def reload_menubar(self) -> None:
         self.menuBar().clear()
-        self.createMenubar()
+        self.create_menubar()
 
-    def createMenubar(self):
+    def create_menubar(self) -> None:
         # Create a menu bar
         menubar = self.menuBar()
 
         # Create a File menu and add it to the menu bar
-        file_menu = menubar.addMenu(config.thisTranslation["chat"])
+        file_menu = menubar.addMenu(config_manager.get_translation('chat'))
 
-        new_action = QAction(config.thisTranslation["openDatabase"], self)
-        new_action.setShortcut("Ctrl+Shift+O")
-        new_action.triggered.connect(self.chatGPT.openDatabase)
+        new_action = QAction(config_manager.get_translation('openDatabase'), self)
+        new_action.setShortcut('Ctrl+Shift+O')
+        new_action.triggered.connect(self.chatGPT.open_database)
         file_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["newDatabase"], self)
-        new_action.setShortcut("Ctrl+Shift+N")
-        new_action.triggered.connect(self.chatGPT.newDatabase)
+        new_action = QAction(config_manager.get_translation('newDatabase'), self)
+        new_action.setShortcut('Ctrl+Shift+N')
+        new_action.triggered.connect(self.chatGPT.new_database)
         file_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["saveDatabaseAs"], self)
-        new_action.setShortcut("Ctrl+Shift+S")
-        new_action.triggered.connect(lambda: self.chatGPT.newDatabase(copyExistingDatabase=True))
-        file_menu.addAction(new_action)
-
-        file_menu.addSeparator()
-
-        new_action = QAction(config.thisTranslation["fileManager"], self)
-        new_action.triggered.connect(self.openDatabaseDirectory)
-        file_menu.addAction(new_action)
-
-        new_action = QAction(config.thisTranslation["pluginDirectory"], self)
-        new_action.triggered.connect(self.openPluginsDirectory)
+        new_action = QAction(config_manager.get_translation('saveDatabaseAs'), self)
+        new_action.setShortcut('Ctrl+Shift+S')
+        new_action.triggered.connect(lambda: self.chatGPT.new_database(copy_existing=True))
         file_menu.addAction(new_action)
 
         file_menu.addSeparator()
 
-        new_action = QAction(config.thisTranslation["newChat"], self)
-        new_action.setShortcut("Ctrl+N")
-        new_action.triggered.connect(self.chatGPT.newData)
+        new_action = QAction(config_manager.get_translation('fileManager'), self)
+        new_action.triggered.connect(self.open_database_directory)
         file_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["saveChat"], self)
-        new_action.setShortcut("Ctrl+S")
-        new_action.triggered.connect(self.chatGPT.saveData)
-        file_menu.addAction(new_action)
-
-        new_action = QAction(config.thisTranslation["exportChat"], self)
-        new_action.triggered.connect(self.chatGPT.exportData)
-        file_menu.addAction(new_action)
-
-        new_action = QAction(config.thisTranslation["printChat"], self)
-        new_action.setShortcut("Ctrl+P")
-        new_action.triggered.connect(self.chatGPT.printData)
+        new_action = QAction(config_manager.get_translation('pluginDirectory'), self)
+        new_action.triggered.connect(self.open_plugins_directory)
         file_menu.addAction(new_action)
 
         file_menu.addSeparator()
 
-        new_action = QAction(config.thisTranslation["readTextFile"], self)
-        new_action.triggered.connect(self.chatGPT.openTextFileDialog)
+        new_action = QAction(config_manager.get_translation('newChat'), self)
+        new_action.setShortcut('Ctrl+N')
+        new_action.triggered.connect(self.chatGPT.new_data)
+        file_menu.addAction(new_action)
+
+        new_action = QAction(config_manager.get_translation('saveChat'), self)
+        new_action.setShortcut('Ctrl+S')
+        new_action.triggered.connect(self.chatGPT.save_data)
+        file_menu.addAction(new_action)
+
+        new_action = QAction(config_manager.get_translation('exportChat'), self)
+        new_action.triggered.connect(self.chatGPT.export_data)
+        file_menu.addAction(new_action)
+
+        new_action = QAction(config_manager.get_translation('printChat'), self)
+        new_action.setShortcut('Ctrl+P')
+        new_action.triggered.connect(self.chatGPT.print_data)
         file_menu.addAction(new_action)
 
         file_menu.addSeparator()
 
-        new_action = QAction(config.thisTranslation["countPromptTokens"], self)
+        new_action = QAction(config_manager.get_translation('readTextFile'), self)
+        new_action.triggered.connect(self.chatGPT.open_text_file_dialog)
+        file_menu.addAction(new_action)
+
+        file_menu.addSeparator()
+
+        new_action = QAction(config_manager.get_translation('countPromptTokens'), self)
         new_action.triggered.connect(self.chatGPT.num_tokens_from_messages)
         file_menu.addAction(new_action)
 
         file_menu.addSeparator()
 
         # Create a Exit action and add it to the File menu
-        exit_action = QAction(config.thisTranslation["exit"], self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.setStatusTip(config.thisTranslation["exitTheApplication"])
+        exit_action = QAction(config_manager.get_translation('exit'), self)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.setStatusTip(config_manager.get_translation('exitTheApplication'))
         exit_action.triggered.connect(QGuiApplication.instance().quit)
         file_menu.addAction(exit_action)
 
         # Create customise menu
-        customise_menu = menubar.addMenu(config.thisTranslation["customise"])
+        customise_menu = menubar.addMenu(config_manager.get_translation('customise'))
 
-        openSettings = QAction(config.thisTranslation["configure"], self)
-        openSettings.triggered.connect(self.chatGPT.showApiDialog)
-        customise_menu.addAction(openSettings)
+        open_settings = QAction(config_manager.get_translation('configure'), self)
+        open_settings.triggered.connect(self.chatGPT.show_api_dialog)
+        customise_menu.addAction(open_settings)
 
         customise_menu.addSeparator()
 
-        new_action = QAction(config.thisTranslation["toggleDarkTheme"], self)
-        new_action.triggered.connect(self.toggleTheme)
+        new_action = QAction(config_manager.get_translation('toggleDarkTheme'), self)
+        new_action.triggered.connect(self.toggle_theme)
         customise_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["toggleSystemTray"], self)
-        new_action.triggered.connect(self.toggleSystemTray)
+        new_action = QAction(config_manager.get_translation('toggleSystemTray'), self)
+        new_action.triggered.connect(self.toggle_system_tray)
         customise_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["toggleMultilineInput"], self)
-        new_action.setShortcut("Ctrl+L")
-        new_action.triggered.connect(self.chatGPT.multilineButtonClicked)
+        new_action = QAction(config_manager.get_translation('toggleMultilineInput'), self)
+        new_action.setShortcut('Ctrl+L')
+        new_action.triggered.connect(self.chatGPT.multiline_button_clicked)
         customise_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["toggleRegexp"], self)
-        new_action.setShortcut("Ctrl+E")
-        new_action.triggered.connect(self.toggleRegexp)
+        new_action = QAction(config_manager.get_translation('toggleRegexp'), self)
+        new_action.setShortcut('Ctrl+E')
+        new_action.triggered.connect(self.toggle_regexp)
         customise_menu.addAction(new_action)
 
         # Create predefined context menu
-        context_menu = menubar.addMenu(config.thisTranslation["predefinedContext"])
-        for index, context in enumerate(config.predefinedContexts):
-            contextAction = QAction(context, self)
+        context_menu = menubar.addMenu(config_manager.get_translation('predefinedContext'))
+        for index, context in enumerate(config_manager.get_setting('predefinedContexts')):
+            context_action = QAction(context, self)
             if index < 10:
-                contextAction.setShortcut(f"Ctrl+{index}")
-            contextAction.triggered.connect(partial(self.chatGPT.bibleChatAction, context))
-            context_menu.addAction(contextAction)
+                context_action.setShortcut(f'Ctrl+{index}')
+            context_action.triggered.connect(partial(self.chatGPT.chat_action, context))
+            context_menu.addAction(context_action)
 
+        # TODO:
         # Create a plugin menu
-        plugin_menu = menubar.addMenu(config.thisTranslation["plugins"])
+        # plugin_menu = menubar.addMenu(config_manager.get_translation('plugins'))
 
-        pluginFolder = os.path.join(os.getcwd(), "plugins")
-        for index, plugin in enumerate(self.fileNamesWithoutExtension(pluginFolder, "py")):
-            new_action = QAction(plugin, self)
-            new_action.setCheckable(True)
-            new_action.setChecked(False if plugin in config.chatGPTPluginExcludeList else True)
-            new_action.triggered.connect(partial(self.updateExcludePluginList, plugin))
-            plugin_menu.addAction(new_action)
+        # plugin_folder = Path.cwd() / 'plugins'
+        # for _, plugin in enumerate(self.file_names_without_extension(plugin_folder, 'py')):
+        #     new_action = QAction(plugin, self)
+        #     new_action.setCheckable(True)
+        #     new_action.setChecked(bool(plugin in config_manager.get_setting('chatGPTPluginExcludeList')))
+        #     new_action.triggered.connect(partial(self.update_exclude_plugin_list, plugin))
+        #     plugin_menu.addAction(new_action)
 
         # Create a text selection menu
-        text_selection_menu = menubar.addMenu(config.thisTranslation["textSelection"])
+        text_selection_menu = menubar.addMenu(config_manager.get_translation('textSelection'))
 
-        new_action = QAction(config.thisTranslation["webBrowser"], self)
-        new_action.triggered.connect(self.chatGPT.webBrowse)
+        new_action = QAction(config_manager.get_translation('webBrowser'), self)
+        new_action.triggered.connect(self.chatGPT.web_browse)
         text_selection_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["runAsPythonCommand"], self)
-        new_action.triggered.connect(self.chatGPT.runPythonCommand)
+        new_action = QAction(config_manager.get_translation('runAsPythonCommand'), self)
+        new_action.triggered.connect(self.chatGPT.run_python_command)
         text_selection_menu.addAction(new_action)
 
-        new_action = QAction(config.thisTranslation["runAsSystemCommand"], self)
-        new_action.triggered.connect(self.chatGPT.runSystemCommand)
+        new_action = QAction(config_manager.get_translation('runAsSystemCommand'), self)
+        new_action.triggered.connect(self.chatGPT.run_system_command)
         text_selection_menu.addAction(new_action)
 
         # Create About menu
-        about_menu = menubar.addMenu(config.thisTranslation["about"])
+        about_menu = menubar.addMenu(config_manager.get_translation('about'))
 
-        openSettings = QAction(config.thisTranslation["repository"], self)
-        openSettings.triggered.connect(lambda: webbrowser.open("https://github.com/eliranwong/ChatGPT-GUI"))
-        about_menu.addAction(openSettings)
-
-        about_menu.addSeparator()
-
-        new_action = QAction(config.thisTranslation["help"], self)
-        new_action.triggered.connect(lambda: webbrowser.open("https://github.com/eliranwong/ChatGPT-GUI/wiki"))
-        about_menu.addAction(new_action)
+        open_settings = QAction(config_manager.get_translation('repository'), self)
+        open_settings.triggered.connect(lambda: webbrowser.open('https://github.com/iroedius/ChatGPTQT'))
+        about_menu.addAction(open_settings)
 
         about_menu.addSeparator()
 
-        new_action = QAction(config.thisTranslation["donate"], self)
-        new_action.triggered.connect(lambda: webbrowser.open("https://www.paypal.com/paypalme/MarvelBible"))
+        new_action = QAction(config_manager.get_translation('help'), self)
+        new_action.triggered.connect(lambda: webbrowser.open('https://github.com/iroedius/ChatGPTQT/wiki'))
         about_menu.addAction(new_action)
 
-        
-
-
-    def initUI(self):
+    def init_ui(self) -> None:
         # Set a central widget
         self.chatGPT = ChatGPTAPI(self)
         self.setCentralWidget(self.chatGPT)
 
         # create menu bar
-        self.createMenubar()
+        self.create_menubar()
 
         # set initial window size
-        #self.setWindowTitle("ChatGPT-GUI")
-        self.resize(QGuiApplication.primaryScreen().availableSize() * 3 / 4)
+        # self.setWindowTitle("ChatGPTQT")
+        self.resize(QGuiApplication.primaryScreen().availableSize() * (3 / 4))
         self.show()
 
-    def updateExcludePluginList(self, plugin):
-        if plugin in config.chatGPTPluginExcludeList:
-            config.chatGPTPluginExcludeList.remove(plugin)
+    def update_exclude_plugin_list(self, plugin: str) -> None:
+        if plugin in config_manager.get_setting('chatGPTPluginExcludeList'):
+            config_manager.get_internal('chatGPTPluginExcludeList').remove(plugin)
         else:
-            config.chatGPTPluginExcludeList.append(plugin)
-        internetSeraches = "integrate google searches"
-        if internetSeraches in config.chatGPTPluginExcludeList and config.loadingInternetSearches == "auto":
-            config.loadingInternetSearches = "none"
-        elif not internetSeraches in config.chatGPTPluginExcludeList and config.loadingInternetSearches == "none":
-            config.loadingInternetSearches = "auto"
-            config.chatGPTApiFunctionCall = "auto"
+            config_manager.get_internal('chatGPTPluginExcludeList').append(plugin)
+        internet_searches = 'integrate google searches'
+        if internet_searches in config_manager.get_setting('chatGPTPluginExcludeList') and config_manager.get_setting('loadingInternetSearches') == 'auto':
+            config_manager.update_setting('loadingInternetSearches', 'none')
+        elif internet_searches not in config_manager.get_setting('chatGPTPluginExcludeList') and config_manager.get_setting('loadingInternetSearches') == 'none':
+            config_manager.update_setting('loadingInternetSearches', 'auto')
+            config_manager.update_setting('chatGPTApiFunctionCall', 'auto')
         # reload plugins
-        config.chatGPTApi.runPlugins()
+        config_manager.get_internal('chatGPTApi').runPlugins()
 
-    def fileNamesWithoutExtension(self, dir, ext):
-        files = glob.glob(os.path.join(dir, "*.{0}".format(ext)))
-        return sorted([file[len(dir)+1:-(len(ext)+1)] for file in files if os.path.isfile(file)])
+    def file_names_without_extension(self, directory: Path, ext: str) -> list:
+        return [item for item in directory.glob(f'*.{ext}') if item.is_file()]
 
-    def getOpenCommand(self):
-        thisOS = platform.system()
-        if thisOS == "Windows":
-            openCommand = "start"
-        elif thisOS == "Darwin":
-            openCommand = "open"
-        elif thisOS == "Linux":
-            openCommand = "xdg-open"
-        return openCommand
+    def get_open_command(self) -> str:
+        this_os = platform.system()
+        open_command = ''
+        if this_os == 'Windows':
+            open_command = 'start'
+        elif this_os == 'Darwin':
+            open_command = 'open'
+        elif this_os == 'Linux':
+            open_command = 'xdg-open'
+        return open_command
 
-    def openDatabaseDirectory(self):
-        databaseDirectory = os.path.dirname(os.path.abspath(config.chatGPTApiLastChatDatabase))
-        openCommand = self.getOpenCommand()
-        os.system(f"{openCommand} {databaseDirectory}")
+    def open_database_directory(self) -> None:
+        database_directory = Path(config_manager.get_setting('chatGPTApiLastChatDatabase')).parent
+        open_command = self.get_open_command()
+        os.system(f'{open_command} {database_directory}')
 
-    def openPluginsDirectory(self):
-        openCommand = self.getOpenCommand()
-        os.system(f"{openCommand} plugins")
+    def open_plugins_directory(self) -> None:
+        open_command = self.get_open_command()
+        os.system(f'{open_command} plugins')
 
-    def toggleRegexp(self):
-        config.regexpSearchEnabled = not config.regexpSearchEnabled
-        self.chatGPT.updateSearchToolTips()
-        QMessageBox.information(self, "ChatGPT-GUI", f"Regular expression for search and replace is {'enabled' if config.regexpSearchEnabled else 'disabled'}!")
+    def toggle_regexp(self) -> None:
+        config_manager.update_setting('regexpSearchEnabled', str(not bool(config_manager.get_setting('regexpSearchEnabled'))))
+        self.chatGPT.update_search_tool_tips()
+        QMessageBox.information(self, 'ChatGPTQT', f"Regex for search and replace is {'enabled' if config_manager.get_setting('regexpSearchEnabled') else 'disabled'}!")
 
-    def toggleSystemTray(self):
-        config.enableSystemTray = not config.enableSystemTray
-        QMessageBox.information(self, "ChatGPT-GUI", "You need to restart this application to make the changes effective.")
+    def toggle_system_tray(self) -> None:
+        config_manager.update_setting('enableSystemTray', not config_manager.get_setting('enableSystemTray'))
+        QMessageBox.information(self, 'ChatGPTQT', 'You need to restart this application to make the changes effective.')
 
-    def toggleTheme(self):
-        config.darkTheme = not config.darkTheme
-        qdarktheme.setup_theme() if config.darkTheme else qdarktheme.setup_theme("light")
+    def toggle_theme(self) -> None:
+        config_manager.update_internal('darkTheme', not config_manager.get_internal('darkTheme'))
+        qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
 
     # Work with system tray
-    def isWayland(self):
-        if platform.system() == "Linux" and not os.getenv('QT_QPA_PLATFORM') is None and os.getenv('QT_QPA_PLATFORM') == "wayland":
-            return True
-        else:
-            return False
+    def is_wayland(self) -> bool:
+        return bool(platform.system() == 'Linux' and os.getenv('QT_QPA_PLATFORM') is not None and os.getenv('QT_QPA_PLATFORM') == 'wayland')
 
-    def bringToForeground(self, window):
+    def bring_to_foreground(self, window: QMainWindow) -> None:
         if window and not (window.isVisible() and window.isActiveWindow()):
             window.raise_()
             # Method activateWindow() does not work with qt.qpa.wayland
@@ -1398,139 +1446,134 @@ class MainWindow(QMainWindow):
             if window.isVisible() and not window.isActiveWindow():
                 window.hide()
             window.show()
-            if not self.isWayland():
+            if not self.is_wayland():
                 window.activateWindow()
 
 
 if __name__ == '__main__':
-    def showMainWindow():
-        if not hasattr(config, "mainWindow") or config.mainWindow is None:
-            config.mainWindow = MainWindow()
-            qdarktheme.setup_theme() if config.darkTheme else qdarktheme.setup_theme("light")
+
+    def show_main_window() -> None:
+        if not config_manager.get_internal('mainWindow'):
+            main_window_instance = MainWindow()
+            config_manager.update_internal('mainWindow', main_window_instance)
+            qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
         else:
-            config.mainWindow.bringToForeground(config.mainWindow)
+            config_manager.get_internal('mainWindow').bring_to_foreground(config_manager.get_internal('mainWindow'))
 
-    def aboutToQuit():
-        with open("config.py", "w", encoding="utf-8") as fileObj:
-            for name in dir(config):
-                excludeFromSavingList = (
-                    "mainWindow", # main window object
-                    "chatGPTApi", # GUI object
-                    "chatGPTTransformers", # used with plugins; transform ChatGPT response message
-                    "predefinedContexts", # used with plugins; pre-defined contexts
-                    "inputSuggestions", # used with plugins; user input suggestions
-                    "integrate_google_searches_signature",
-                    "chatGPTApiFunctionSignatures", # used with plugins; function calling
-                    "chatGPTApiAvailableFunctions", # used with plugins; function calling
-                    "pythonFunctionResponse", # used with plugins; function calling when function name is 'python'
-                )
-                if not name.startswith("__") and not name in excludeFromSavingList:
-                    try:
-                        value = eval(f"config.{name}")
-                        fileObj.write("{0} = {1}\n".format(name, pprint.pformat(value)))
-                    except:
-                        pass
+    # TODO: probably unneeded
+    def about_to_quit() -> None:
+        pass
+        # with Path('config.py').open('w', encoding='utf-8') as file_obj:
+        #     for name in dir(config):
+        #         exclude_from_saving_list = (
+        #             'mainWindow',  # main window object
+        #             'chatGPTApi',  # GUI object
+        #             'chatGPTTransformers',  # used with plugins; transform ChatGPT response message
+        #             'predefinedContexts',  # used with plugins; pre-defined contexts
+        #             'inputSuggestions',  # used with plugins; user input suggestions
+        #             'integrate_google_searches_signature',
+        #             'chatGPTApiFunctionSignatures',  # used with plugins; function calling
+        #             'chatGPTApiAvailableFunctions',  # used with plugins; function calling
+        #             'pythonFunctionResponse',  # used with plugins; function calling when function name is 'python'
+        #         )
+        #         if not name.startswith('__') and name not in exclude_from_saving_list:
+        #             try:
+        #                 value = config_manager.get_setting(name)
+        #                 file_obj.write(f'{name} = {pprint.pformat(value)}\n')
+        #                 config_manager.update_setting(name, value)
+        #             except Exception:
+        #                 logging.exception('Exception while saving settings to config file')
 
-    thisOS = platform.system()
-    appName = "ChatGPT-GUI"
+    platform = platform.system()
+    app_name = 'ChatGPTQT'
+    icon_path = str(Path().cwd().resolve() / 'icons' / f'{app_name}.ico')
     # Windows icon
-    if thisOS == "Windows":
-        myappid = "chatgpt.gui"
+    if platform == 'Windows':
+        myappid = 'chatgptqt'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        windowsIconPath = os.path.abspath(os.path.join(sys.path[0], "icons", f"{appName}.ico"))
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(windowsIconPath)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(icon_path)
     # app
-    qdarktheme.enable_hi_dpi()
     app = QApplication(sys.argv)
-    iconPath = os.path.abspath(os.path.join(sys.path[0], "icons", f"{appName}.png"))
-    appIcon = QIcon(iconPath)
-    app.setWindowIcon(appIcon)
-    showMainWindow()
+    app_icon = QIcon(icon_path)
+    app.setWindowIcon(app_icon)
+    show_main_window()
     # connection
-    app.aboutToQuit.connect(aboutToQuit)
+    app.aboutToQuit.connect(about_to_quit)
 
     # Desktop shortcut
     # on Windows
-    if thisOS == "Windows":
-        desktopPath = os.path.join(os.path.expanduser('~'), 'Desktop')
-        shortcutDir = desktopPath if os.path.isdir(desktopPath) else wd
-        shortcutBat1 = os.path.join(shortcutDir, f"{appName}.bat")
-        shortcutCommand1 = f'''powershell.exe -NoExit -Command "python '{thisFile}'"'''
+    if platform == 'Windows':
+        desktop_path = Path.home() / 'Desktop'
+        shortcut_dir = desktop_path if desktop_path.is_dir() else wd
+        shortcut_bat = shortcut_dir / f'{app_name}.bat'
+        shortcut_command = f'''powershell.exe -NoExit -Command "python '{this_file}'"'''
         # Create .bat for application shortcuts
-        if not os.path.exists(shortcutBat1):
-            try:
-                with open(shortcutBat1, "w") as fileObj:
-                    fileObj.write(shortcutCommand1)
-            except:
-                pass
+        if not shortcut_bat.exists():
+            with contextlib.suppress(Exception):
+                shortcut_bat.write_text(shortcut_command)
     # on macOS
-    elif thisOS == "Darwin":
-        shortcut_file = os.path.expanduser(f"~/Desktop/{appName}.command")
-        if not os.path.isfile(shortcut_file):
-            with open(shortcut_file, "w") as f:
-                f.write("#!/bin/bash\n")
-                f.write(f"cd {wd}\n")
-                f.write(f"{sys.executable} {thisFile} gui\n")
-            os.chmod(shortcut_file, 0o755)
+    elif platform == 'Darwin':
+        shortcut_file = Path(f'~/Desktop/{app_name}.command').expanduser()
+        if not shortcut_file.is_file():
+            with shortcut_file.open('w') as f:
+                f.write('#!/bin/bash\n')
+                f.write(f'cd {wd}\n')
+                f.write(f'{sys.executable} {this_file} gui\n')
+            Path(shortcut_file).chmod(0o755)
     # additional shortcuts on Linux
-    elif thisOS == "Linux":
-        def desktopFileContent():
-            iconPath = os.path.join(wd, "icons", "ChatGPT-GUI.png")
-            return """#!/usr/bin/env xdg-open
+    elif platform == 'Linux':
+        def desktop_file_content() -> str:
+            icon_path = wd / 'icons' / 'ChatGPTQT.png'
+            return f'''#!/usr/bin/env xdg-open
 
 [Desktop Entry]
 Version=1.0
 Type=Application
 Terminal=false
-Path={0}
-Exec={1} {2}
-Icon={3}
-Name=ChatGPT GUI
-""".format(wd, sys.executable, thisFile, iconPath)
+Path={wd}
+Exec={sys.executable} {this_file}
+Icon={icon_path}
+Name=ChatGPTQT
+'''
 
-        ubaLinuxDesktopFile = os.path.join(wd, f"{appName}.desktop")
-        if not os.path.exists(ubaLinuxDesktopFile):
+        linux_desktop_file = Path(wd) / f'{app_name}.desktop'
+        if not linux_desktop_file.exists():
             # Create .desktop shortcut
-            with open(ubaLinuxDesktopFile, "w") as fileObj:
-                fileObj.write(desktopFileContent())
-            try:
+            with contextlib.suppress(Exception):
+                linux_desktop_file.write_text(desktop_file_content(), encoding=locale.getpreferredencoding(do_setlocale=False))
                 # Try to copy the newly created .desktop file to:
-                from pathlib import Path
                 # ~/.local/share/applications
-                userAppDir = os.path.join(str(Path.home()), ".local", "share", "applications")
-                userAppDirShortcut = os.path.join(userAppDir, f"{appName}.desktop")
-                if not os.path.exists(userAppDirShortcut):
-                    Path(userAppDir).mkdir(parents=True, exist_ok=True)
-                    copyfile(ubaLinuxDesktopFile, userAppDirShortcut)
+                user_app_dir = Path.home() / '.local' / 'share' / 'applications'
+                user_app_dir_shortcut = user_app_dir / f'{app_name}.desktop'
+                user_app_dir.mkdir(parents=True, exist_ok=True)
+                if not user_app_dir_shortcut.exists():
+                    copyfile(linux_desktop_file, user_app_dir_shortcut)
                 # ~/Desktop
-                homeDir = os.environ["HOME"]
-                desktopPath = f"{homeDir}/Desktop"
-                desktopPathShortcut = os.path.join(desktopPath, f"{appName}.desktop")
-                if os.path.isfile(desktopPath) and not os.path.isfile(desktopPathShortcut):
-                    copyfile(ubaLinuxDesktopFile, desktopPathShortcut)
-            except:
-                pass
+                desktop_path = Path(os.environ['HOME']) / 'Desktop'
+                desktop_path_shortcut = desktop_path / f'{app_name}.desktop'
+                if not desktop_path_shortcut.is_file():
+                    copyfile(linux_desktop_file, desktop_path_shortcut)
 
     # system tray
-    if config.enableSystemTray:
+    if config_manager.get_setting('enableSystemTray'):
         app.setQuitOnLastWindowClosed(False)
         # Set up tray icon
         tray = QSystemTrayIcon()
-        tray.setIcon(appIcon)
-        tray.setToolTip("ChatGPT-GUI")
+        tray.setIcon(app_icon)
+        tray.setToolTip('ChatGPTQT')
         tray.setVisible(True)
         # Import system tray menu
-        trayMenu = QMenu()
-        showMainWindowAction = QAction(config.thisTranslation["show"])
-        showMainWindowAction.triggered.connect(showMainWindow)
-        trayMenu.addAction(showMainWindowAction)
+        tray_menu = QMenu()
+        show_main_window_action = QAction(config_manager.get_translation('show'))
+        show_main_window_action.triggered.connect(show_main_window)
+        tray_menu.addAction(show_main_window_action)
         # Add a separator
-        trayMenu.addSeparator()
+        tray_menu.addSeparator()
         # Quit
-        quitAppAction = QAction(config.thisTranslation["exit"])
-        quitAppAction.triggered.connect(app.quit)
-        trayMenu.addAction(quitAppAction)
-        tray.setContextMenu(trayMenu)
+        quit_app_action = QAction(config_manager.get_translation('exit'))
+        quit_app_action.triggered.connect(app.quit)
+        tray_menu.addAction(quit_app_action)
+        tray.setContextMenu(tray_menu)
 
     # run the app
-    sys.exit(app.exec() if config.qtLibrary == "pyside6" else app.exec_())
+    sys.exit(app.exec())
