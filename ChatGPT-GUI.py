@@ -32,7 +32,7 @@ from shutil import copyfile
 from typing import Any
 
 import openai
-import qdarktheme
+# from qtmodern import styles, windows # Removed qtmodern
 import tiktoken
 from gtts import gTTS
 from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QThread, Signal
@@ -74,6 +74,340 @@ if Path.cwd() != wd:
     os.chdir(wd)
 if not Path('config.py').is_file():
     Path('config.py').open('a').close()
+
+DARK_THEME_QSS = """
+QWidget {
+    background-color: #2e2e2e;
+    color: #e0e0e0;
+    font-family: "Segoe UI", Arial, sans-serif; /* Example font */
+}
+
+QMainWindow {
+    background-color: #2e2e2e;
+}
+
+QLabel {
+    color: #e0e0e0;
+    background-color: transparent; /* Ensure labels don't have their own background unless specified */
+}
+
+QPushButton {
+    background-color: #4a4a4a;
+    color: #e0e0e0;
+    border: 1px solid #555555;
+    padding: 6px 12px;
+    border-radius: 4px;
+    min-width: 80px; /* Ensure buttons have a decent minimum width */
+}
+QPushButton:hover {
+    background-color: #5a5a5a;
+    border: 1px solid #666666;
+}
+QPushButton:pressed {
+    background-color: #3a3a3a;
+}
+QPushButton:disabled {
+    background-color: #404040;
+    color: #888888;
+    border-color: #454545;
+}
+
+QLineEdit, QPlainTextEdit {
+    background-color: #3c3c3c;
+    color: #e0e0e0;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    padding: 5px;
+    selection-background-color: #5a6f8c; /* A bluish selection color */
+    selection-color: #e0e0e0;
+}
+QLineEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid #77aaff; /* Highlight focus */
+}
+QLineEdit:read-only, QPlainTextEdit:read-only {
+    background-color: #333333;
+    color: #a0a0a0;
+}
+
+
+QListView {
+    background-color: #3c3c3c;
+    color: #e0e0e0;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    alternate-background-color: #424242; /* For alternating row colors */
+    outline: 0; /* Remove focus outline if not desired */
+}
+QListView::item {
+    padding: 5px;
+}
+QListView::item:selected {
+    background-color: #5a6f8c; /* Selection color */
+    color: #ffffff;
+}
+QListView::item:hover {
+    background-color: #4f4f4f; /* Hover color */
+}
+
+
+QComboBox {
+    background-color: #4a4a4a;
+    color: #e0e0e0;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    padding: 5px;
+    min-width: 6em;
+}
+QComboBox:editable {
+    background-color: #3c3c3c; /* Background of the line edit part */
+}
+QComboBox:hover {
+    background-color: #5a5a5a;
+    border-color: #666666;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left-width: 1px;
+    border-left-color: #555555;
+    border-left-style: solid;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+    background-color: #4a4a4a;
+}
+QComboBox::down-arrow {
+    image: url(icons/down_arrow_light.png); /* Placeholder: Needs an actual icon */
+}
+QComboBox::down-arrow:on { /* Arrow when combo box is open */
+    /* image: url(icons/up_arrow_light.png); */ /* Placeholder */
+}
+QComboBox QAbstractItemView { /* Style for the dropdown list */
+    background-color: #3c3c3c;
+    border: 1px solid #555555;
+    selection-background-color: #5a6f8c;
+    color: #e0e0e0;
+}
+
+QCheckBox {
+    spacing: 5px;
+    color: #e0e0e0;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #555555;
+    border-radius: 3px;
+    background-color: #3c3c3c;
+}
+QCheckBox::indicator:unchecked:hover {
+    border: 1px solid #666666;
+}
+QCheckBox::indicator:checked {
+    background-color: #5a6f8c; /* Check mark color */
+    border: 1px solid #5a6f8c;
+    image: url(icons/checkmark_light.png); /* Placeholder: Needs an actual checkmark icon */
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #6a7f9c;
+    border: 1px solid #6a7f9c;
+}
+QCheckBox::indicator:disabled {
+    border: 1px solid #454545;
+    background-color: #404040;
+}
+
+
+QMenuBar {
+    background-color: #383838;
+    color: #e0e0e0;
+    border-bottom: 1px solid #2a2a2a; /* Separator line */
+}
+QMenuBar::item {
+    background-color: transparent;
+    padding: 5px 10px;
+}
+QMenuBar::item:selected { /* When hovered */
+    background-color: #4f4f4f;
+}
+QMenuBar::item:pressed { /* When menu is open */
+    background-color: #5a5a5a;
+}
+
+QMenu {
+    background-color: #3c3c3c;
+    color: #e0e0e0;
+    border: 1px solid #505050;
+    padding: 5px;
+}
+QMenu::item {
+    padding: 5px 20px 5px 20px; /* Top, Right, Bottom, Left */
+    border-radius: 3px;
+}
+QMenu::item:selected {
+    background-color: #5a6f8c;
+    color: #ffffff;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #505050;
+    margin-left: 10px;
+    margin-right: 5px;
+}
+QMenu::indicator { /* For checkable QAction */
+    width: 13px;
+    height: 13px;
+    /* padding-left: 5px; */ /* Align with text */
+}
+
+
+QProgressBar {
+    border: 1px solid #555555;
+    border-radius: 4px;
+    text-align: center;
+    color: #e0e0e0;
+    background-color: #3c3c3c;
+}
+QProgressBar::chunk {
+    background-color: #5a6f8c;
+    width: 10px; /* Width of the progress segments */
+    margin: 0.5px;
+}
+
+QScrollBar:vertical {
+    border: 1px solid #3a3a3a;
+    background: #2e2e2e;
+    width: 15px;
+    margin: 15px 0 15px 0; /* Top, Right, Bottom, Left - leave space for arrows */
+    border-radius: 0px;
+}
+QScrollBar::handle:vertical {
+    background-color: #4f4f4f;
+    min-height: 20px;
+    border-radius: 3px;
+    border: 1px solid #555555;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #5a5a5a;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: 1px solid #3a3a3a;
+    background: #4a4a4a;
+    height: 14px;
+    subcontrol-origin: margin;
+}
+QScrollBar::add-line:vertical:hover, QScrollBar::sub-line:vertical:hover {
+    background: #5a5a5a;
+}
+QScrollBar::add-line:vertical {
+    subcontrol-position: bottom;
+}
+QScrollBar::sub-line:vertical {
+    subcontrol-position: top;
+}
+/* TODO: Add up/down arrow images for scrollbar */
+
+QScrollBar:horizontal {
+    border: 1px solid #3a3a3a;
+    background: #2e2e2e;
+    height: 15px;
+    margin: 0 15px 0 15px; /* Top, Right, Bottom, Left - leave space for arrows */
+    border-radius: 0px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #4f4f4f;
+    min-width: 20px;
+    border-radius: 3px;
+    border: 1px solid #555555;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #5a5a5a;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    border: 1px solid #3a3a3a;
+    background: #4a4a4a;
+    width: 14px;
+    subcontrol-origin: margin;
+}
+QScrollBar::add-line:horizontal:hover, QScrollBar::sub-line:horizontal:hover {
+    background: #5a5a5a;
+}
+QScrollBar::add-line:horizontal {
+    subcontrol-position: right;
+}
+QScrollBar::sub-line:horizontal {
+    subcontrol-position: left;
+}
+/* TODO: Add left/right arrow images for scrollbar */
+
+
+QSplitter::handle {
+    background-color: #3a3a3a;
+    border: 1px solid #2a2a2a;
+    width: 5px; /* Vertical splitter */
+    height: 5px; /* Horizontal splitter */
+}
+QSplitter::handle:hover {
+    background-color: #4f4f4f;
+}
+QSplitter::handle:pressed {
+    background-color: #5a5a5a;
+}
+
+QToolTip {
+    background-color: #2e2e2e;
+    color: #e0e0e0;
+    border: 1px solid #555555;
+    padding: 4px;
+    opacity: 230; /* Slightly transparent */
+}
+
+QDialog {
+    background-color: #2e2e2e;
+}
+
+QDialogButtonBox QPushButton { /* Ensure buttons in dialogs also get styled */
+    min-width: 80px;
+}
+
+QTabBar::tab {
+    background: #3c3c3c;
+    border: 1px solid #555555;
+    border-bottom-color: #3c3c3c; /* Same as background color for selected tab */
+    padding: 8px 15px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    color: #a0a0a0;
+}
+
+QTabBar::tab:selected, QTabBar::tab:hover {
+    background: #4a4a4a;
+    color: #e0e0e0;
+}
+
+QTabBar::tab:selected {
+    border-color: #555555;
+    border-bottom-color: #4a4a4a; /* Make selected tab blend with content area */
+}
+
+QTabWidget::pane { /* The area where tab pages are shown */
+    border: 1px solid #555555;
+    background: #4a4a4a; /* Should match selected tab background */
+}
+
+QStatusBar {
+    background-color: #383838;
+    color: #e0e0e0;
+    border-top: 1px solid #2a2a2a;
+}
+
+/* Placeholder for icons - actual icons would need to be provided */
+/* For example, QComboBox::down-arrow, QCheckBox::indicator:checked, QScrollBar arrows */
+/* You might need to create/find these icons and place them in an 'icons' directory */
+/* QComboBox::down-arrow { image: url(./icons/arrow_down_dark.svg); } */
+/* QCheckBox::indicator:checked { image: url(./icons/checkbox_checked_dark.svg); } */
+
+"""
 
 
 class SpeechRecognitionThread(QThread):
@@ -1301,9 +1635,9 @@ class MainWindow(QMainWindow):
 
         customise_menu.addSeparator()
 
-        new_action = QAction(config_manager.get_translation('toggleDarkTheme'), self)
-        new_action.triggered.connect(self.toggle_theme)
-        customise_menu.addAction(new_action)
+        # new_action = QAction(config_manager.get_translation('toggleDarkTheme'), self)
+        # new_action.triggered.connect(self.toggle_theme)
+        # customise_menu.addAction(new_action)
 
         new_action = QAction(config_manager.get_translation('toggleSystemTray'), self)
         new_action.triggered.connect(self.toggle_system_tray)
@@ -1429,13 +1763,30 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self) -> None:
         config_manager.update_internal('darkTheme', not config_manager.get_internal('darkTheme'))
-        qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
+        # app = QApplication.instance()
+        # if config_manager.get_setting('darkTheme'):
+        #     styles.dark(app)
+        # else:
+        #     styles.light(app)
+        # # Re-apply the style to the ModernWindow wrapper if necessary
+        # mw = config_manager.get_internal('mainWindow')
+        # if mw and isinstance(mw, windows.ModernWindow):
+        #     # Ensure app style is set first, then apply to ModernWindow
+        #     # This step might be redundant if ModernWindow automatically picks up app style changes.
+        #     # However, explicitly setting it ensures the theme is applied.
+        #     if config_manager.get_setting('darkTheme'):
+        #         styles.dark(app)
+        #     else:
+        #         styles.light(app)
+        #     mw.setStyleSheet(app.styleSheet())
+        pass # Theme toggling disabled for now
+
 
     # Work with system tray
     def is_wayland(self) -> bool:
         return bool(platform.system() == 'Linux' and os.getenv('QT_QPA_PLATFORM') is not None and os.getenv('QT_QPA_PLATFORM') == 'wayland')
 
-    def bring_to_foreground(self, window: QMainWindow) -> None:
+    def bring_to_foreground(self, window: QMainWindow) -> None: # window is now ModernWindow
         if window and not (window.isVisible() and window.isActiveWindow()):
             window.raise_()
             # Method activateWindow() does not work with qt.qpa.wayland
@@ -1444,21 +1795,31 @@ class MainWindow(QMainWindow):
             # qt.qpa.wayland: Wayland does not support QWindow::requestActivate()
             # Therefore, we use hide and show methods instead with wayland.
             if window.isVisible() and not window.isActiveWindow():
-                window.hide()
-            window.show()
+                window.hide() # Should be called on ModernWindow instance
+            window.show() # Should be called on ModernWindow instance
             if not self.is_wayland():
-                window.activateWindow()
+                window.activateWindow() # Should be called on ModernWindow instance
 
 
 if __name__ == '__main__':
 
     def show_main_window() -> None:
+        app = QApplication.instance() # Get app instance
+        if not app: # Create if it doesn't exist (should be created before this function by `app = QApplication(sys.argv)`)
+            app = QApplication(sys.argv)
+            # config_manager.update_internal('app', app) # Not strictly necessary to store in config_manager here
+
+        # Apply the dark theme QSS globally
+        app.setStyleSheet(DARK_THEME_QSS)
+
         if not config_manager.get_internal('mainWindow'):
             main_window_instance = MainWindow()
             config_manager.update_internal('mainWindow', main_window_instance)
-            qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
+            main_window_instance.show()
         else:
-            config_manager.get_internal('mainWindow').bring_to_foreground(config_manager.get_internal('mainWindow'))
+            current_window = config_manager.get_internal('mainWindow')
+            current_window.bring_to_foreground(current_window)
+
 
     # TODO: probably unneeded
     def about_to_quit() -> None:
