@@ -76,5 +76,5 @@ class ConfigManager:
         self.save_config()
 
     def save_config(self) -> None:
-        with Path(self.settings_path).open('w') as f:
+        with self.settings_path.open('w') as f:
             json.dump(self.settings, f, indent=2)

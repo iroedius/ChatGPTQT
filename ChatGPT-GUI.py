@@ -32,7 +32,6 @@ from shutil import copyfile
 from typing import Any
 
 import openai
-import pyqtdarktheme as qdarktheme
 import tiktoken
 from gtts import gTTS
 from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QThread, Signal
@@ -66,6 +65,7 @@ from PySide6.QtWidgets import (
 from config_manager import ConfigManager
 from util.Worker import ChatGPTResponse, OpenAIImage
 from llm_providers import LLMProvider, OpenAIProvider, GeminiProvider # Added GeminiProvider
+from util.custom_theme import get_dark_theme_qss
 
 config_manager = ConfigManager()
 
@@ -74,7 +74,7 @@ wd = this_file.parent
 if Path.cwd() != wd:
     os.chdir(wd)
 if not Path('config.py').is_file():
-    Path('config.py').open('a').close()
+    Path('config.py').touch(exist_ok=True)
 
 
 class SpeechRecognitionThread(QThread):
@@ -374,13 +374,13 @@ class Database:
             reg = re.compile(expr, flags=re.IGNORECASE)
             return reg.search(item) is not None
 
-        default_file_path = (
-            config_manager.get_setting('chat_gpt_api_last_chat_database')
-            if config_manager.get_setting('chat_gpt_api_last_chat_database') and Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).is_file()
-            else Path(wd) / 'chats' / 'default.chat'
-        )
-        self.file_path = file_path or default_file_path
-        self.connection = sqlite3.connect(self.file_path)
+        default_file_path_str = config_manager.get_setting('chat_gpt_api_last_chat_database')
+        default_file_path = Path(wd) / 'chats' / 'default.chat'
+        if default_file_path_str and Path(default_file_path_str).is_file():
+            default_file_path = Path(default_file_path_str)
+
+        self.file_path: Path = Path(file_path) if file_path else default_file_path
+        self.connection = sqlite3.connect(str(self.file_path)) # sqlite3.connect expects a string
         self.connection.create_function('REGEXP', 2, regexp)
         self.cursor = self.connection.cursor()
         self.cursor.execute('CREATE TABLE IF NOT EXISTS data (id TEXT PRIMARY KEY, title TEXT, content TEXT)')
@@ -441,10 +441,12 @@ class ChatGPTAPI(QWidget):
         # Show a file dialog to get the file path to open
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Open Database', os.path.join(wd, 'chats', 'default.chat'), 'ChatGPTQT Database (*.chat)', options=options)
+        default_dir = str(wd / 'chats') # QFileDialog expects string paths
+        file_path_str, _ = QFileDialog.getOpenFileName(self, 'Open Database', default_dir, 'ChatGPTQT Database (*.chat)', options=options)
 
         # If the user selects a file path, open the file
-        self.database = Database(file_path)
+        if file_path_str:
+            self.database = Database(file_path_str)
         self.load_data()
         self.update_title(file_path)
         self.new_data()
@@ -453,38 +455,45 @@ class ChatGPTAPI(QWidget):
         # Show a file dialog to get the file path to save
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_path, _ = QFileDialog.getSaveFileName(
+        # Ensure self.database.file_path is a Path for correct joining
+        current_db_path = Path(self.database.file_path) if isinstance(self.database.file_path, str) else self.database.file_path
+        default_save_name = current_db_path.name if copy_existing else 'new.chat'
+        default_dir = str(wd / 'chats' / default_save_name) # QFileDialog expects string paths
+
+        file_path_str, _ = QFileDialog.getSaveFileName(
             self,
             'New Database',
-            os.path.join(wd, 'chats', self.database.file_path if copy_existing else 'new.chat'),
+            default_dir,
             'ChatGPTQT Database (*.chat)',
             options=options,
         )
 
         # If the user selects a file path, save the file
-        if file_path:
+        if file_path_str:
+            new_file_path = Path(file_path_str)
             # make sure the file ends with ".chat"
-            if not file_path.endswith('.chat'):
-                file_path += '.chat'
+            if new_file_path.suffix != '.chat':
+                new_file_path = new_file_path.with_suffix(new_file_path.suffix + '.chat')
+
             # ignore if copy currently opened database
-            if copy_existing and Path(file_path).resolve() == Path(self.database.file_path).resolve():
+            if copy_existing and new_file_path.resolve() == current_db_path.resolve():
                 return
             # Check if the file already exists
-            if Path(file_path).is_file():
+            if new_file_path.is_file():
                 # Ask the user if they want to replace the existing file
                 msg_box = QMessageBox()
                 msg_box.setWindowTitle('Confirm overwrite')
-                msg_box.setText(f'The file {file_path} already exists. Do you want to replace it?')
+                msg_box.setText(f'The file {new_file_path} already exists. Do you want to replace it?')
                 msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
                 msg_box.setDefaultButton(QMessageBox.No)
                 if msg_box.exec() == QMessageBox.No:
                     return
-                Path(file_path).unlink()
+                new_file_path.unlink()
 
             # create a new database
             if copy_existing:
-                shutil.copy(self.database.file_path, file_path)
-            self.database = Database(file_path)
+                shutil.copy(str(current_db_path), str(new_file_path)) # shutil.copy works with strings or Path-like
+            self.database = Database(str(new_file_path))
             self.load_data()
             self.update_title(file_path)
             self.new_data()
@@ -1070,20 +1079,22 @@ Follow the following steps:
         # Show a file dialog to get the file path to save
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Chat Content', os.path.join(wd, 'chats', 'chat.txt'), 'Text Files (*.txt);;Python Files (*.py);;All Files (*)', options=options,
+        default_export_path = str(wd / 'chats' / 'chat.txt') # QFileDialog expects string
+        file_path_str, _ = QFileDialog.getSaveFileName(
+            self, 'Export Chat Content', default_export_path, 'Text Files (*.txt);;Python Files (*.py);;All Files (*)', options=options,
         )
 
         # If the user selects a file path, save the file
-        if file_path:
-            with Path(file_path).open('w', encoding='utf-8') as file_obj:
+        if file_path_str:
+            with Path(file_path_str).open('w', encoding='utf-8') as file_obj:
                 file_obj.write(self.contentView.toPlainText().strip())
 
     def open_text_file_dialog(self) -> None:
         options = QFileDialog.Options()
-        file_name, filtr = QFileDialog.getOpenFileName(self, 'Open Text File', 'Text File', 'Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)', '', options)
-        if file_name:
-            with Path(file_name).open('r', encoding='utf-8') as file_obj:
+        # QFileDialog expects string paths for directory
+        file_name_str, _ = QFileDialog.getOpenFileName(self, 'Open Text File', str(wd), 'Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)', options=options)
+        if file_name_str:
+            with Path(file_name_str).open('r', encoding='utf-8') as file_obj:
                 self.display_text(file_obj.read())
 
     def display_message(self, message: str = '', title: str = 'ChatGPTQT') -> None:
@@ -1248,9 +1259,9 @@ Follow the following steps:
 
     def get_response(self) -> None:
         if self.progressBar.isVisible() and config_manager.get_setting('chat_gpt_api_no_of_choices') == 1:
-            stop_file = '.stop_chatgpt'
-            if not Path(stop_file).is_file():
-                Path(stop_file).open('a').close()
+            stop_file = Path('.stop_chatgpt')
+            if not stop_file.is_file():
+                stop_file.touch(exist_ok=True)
         elif not self.progressBar.isVisible():
             user_input = self.userInput.text().strip()
             if user_input:
@@ -1272,19 +1283,22 @@ Follow the following steps:
                 self.progressBar.show()  # show progress bar
                 ChatGPTResponse(self).work_on_get_response(messages)  # get chatGPT response in a separate thread
 
-    def file_names_without_extension(self, _dir: str, ext: str) -> None:
-        files = glob.glob(os.path.join(_dir, f'*.{ext}'))
-        return sorted([file[len(_dir) + 1 : -(len(ext) + 1)] for file in files if os.path.isfile(file)])
+    def file_names_without_extension(self, _dir: Path, ext: str) -> list[str]:
+        # Ensure _dir is a Path object
+        dir_path = Path(_dir) if not isinstance(_dir, Path) else _dir
+        files = dir_path.glob(f'*.{ext}')
+        return sorted([file.stem for file in files if file.is_file()])
 
-    def exec_python_file(self, script) -> None:
+    def exec_python_file(self, script_path: Path) -> None:
+        # script_path is now expected to be a Path object
         if config_manager.get_setting('developer'): # developer is already snake_case
-            with open(script, encoding='utf8') as f:
-                code = compile(f.read(), script, 'exec')
+            with script_path.open('r', encoding='utf8') as f:
+                code = compile(f.read(), str(script_path), 'exec') # compile expects string for filename
                 exec(code, globals())
         else:
             try:
-                with open(script, encoding='utf8') as f:
-                    code = compile(f.read(), script, 'exec')
+                with script_path.open('r', encoding='utf8') as f:
+                    code = compile(f.read(), str(script_path), 'exec')
                     exec(code, globals())
             except Exception:
                 msg = f'Failed to run "{Path(script).name}"!'
@@ -1298,15 +1312,15 @@ Follow the following steps:
         # with their defaults if not present in settings.json.
         # Plugins can still modify them via config_manager.update_setting if needed.
 
-        plugin_folder = Path.cwd() / 'plugins'
+        plugin_folder = wd / 'plugins' # Use wd consistently
         # always run 'integrate google searches'
-        internet_searches = 'integrate google searches'
-        script = plugin_folder / f'{internet_searches}.py'
-        self.exec_python_file(script, self) # Pass self (ChatGPTAPI instance)
-        for plugin in self.file_names_without_extension(plugin_folder, 'py'):
-            if plugin != internet_searches and plugin not in config_manager.get_setting('chat_gpt_plugin_exclude_list'):
-                script = plugin_folder / f'{plugin}.py'
-                self.exec_python_file(script, self) # Pass self
+        internet_searches_plugin_name = 'integrate google searches'
+        internet_searches_script_path = plugin_folder / f'{internet_searches_plugin_name}.py'
+        self.exec_python_file(internet_searches_script_path) # Removed self, as exec_python_file doesn't take it
+        for plugin_stem in self.file_names_without_extension(plugin_folder, 'py'):
+            if plugin_stem != internet_searches_plugin_name and plugin_stem not in config_manager.get_setting('chat_gpt_plugin_exclude_list'):
+                script_path = plugin_folder / f'{plugin_stem}.py'
+                self.exec_python_file(script_path) # Removed self
         # if internetSeraches in config_manager.get_setting("chat_gpt_plugin_exclude_list"):
         #     config_manager.update_setting("chat_gpt_api_function_signatures[0], ''") # Example, if needed
 
@@ -1347,15 +1361,17 @@ Follow the following steps:
         audio_files = []
         for index, text in enumerate(text_list):
             with contextlib.suppress(Exception):
-                audio_file = (Path('temp') / f'gtts_{index}.mp3').resolve()
+                temp_dir = wd / 'temp' # Use wd
+                temp_dir.mkdir(exist_ok=True) # Ensure temp directory exists
+                audio_file = temp_dir / f'gtts_{index}.mp3'
                 if audio_file.is_file():
                     audio_file.unlink()
                 gTTS(text=text, lang=config_manager.get_setting('chat_gpt_api_audio_language') or 'en').save(
-                    audio_file,
+                    str(audio_file) # gTTS expects a string path
                 )
                 audio_files.append(audio_file)
         if audio_files:
-            self.play_audio_files(audio_files)
+            self.play_audio_files([str(f) for f in audio_files]) # Ensure strings for play_audio_files if it expects them
 
     def play_audio_files(self, files: list[str]) -> None:
         pass
@@ -1576,13 +1592,18 @@ class MainWindow(QMainWindow):
         return open_command
 
     def open_database_directory(self) -> None:
-        database_directory = Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).parent
-        open_command = self.get_open_command()
-        os.system(f'{open_command} {database_directory}')
+        database_path_str = config_manager.get_setting('chat_gpt_api_last_chat_database')
+        if database_path_str:
+            database_directory = Path(database_path_str).parent
+            open_command = self.get_open_command()
+            if open_command: # Ensure command is not empty
+                os.system(f'{open_command} "{database_directory}"') # Quote path for safety
 
     def open_plugins_directory(self) -> None:
+        plugins_path = wd / 'plugins'
         open_command = self.get_open_command()
-        os.system(f'{open_command} plugins')
+        if open_command: # Ensure command is not empty
+            os.system(f'{open_command} "{plugins_path}"') # Quote path for safety
 
     def toggle_regexp(self) -> None:
         current_value = config_manager.get_setting('regexp_search_enabled')
@@ -1598,9 +1619,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, 'ChatGPTQT', 'You need to restart this application to make the changes effective.')
 
     def toggle_theme(self) -> None:
+        app = QApplication.instance()
         is_dark_theme = config_manager.get_setting('dark_theme')
-        config_manager.update_setting('dark_theme', not is_dark_theme) # This was correct
-        qdarktheme.setup_theme() if not is_dark_theme else qdarktheme.setup_theme('light') # This logic was correct
+        new_dark_theme_state = not is_dark_theme
+        config_manager.update_setting('dark_theme', new_dark_theme_state)
+        if new_dark_theme_state:
+            dark_qss = get_dark_theme_qss()
+            app.setStyleSheet(dark_qss)
+        else:
+            app.setStyleSheet("")
 
     # Work with system tray
     def is_wayland(self) -> bool:
@@ -1628,7 +1655,7 @@ if __name__ == '__main__':
         global main_window_instance
         if not main_window_instance:
             main_window_instance = MainWindow()
-            qdarktheme.setup_theme() if config_manager.get_setting('dark_theme') else qdarktheme.setup_theme('light')
+            # Theme handled by main app instance setup now
         else:
             main_window_instance.bring_to_foreground(main_window_instance)
 
@@ -1656,59 +1683,73 @@ if __name__ == '__main__':
         #             except Exception:
         #                 logging.exception('Exception while saving settings to config file')
 
-    platform = platform.system()
+    platform_system = platform.system() # Renamed to avoid conflict with 'platform' module
     app_name = 'ChatGPTQT'
-    icon_path = str(Path().cwd().resolve() / 'icons' / f'{app_name}.ico')
+    # Use wd for icon path consistency
+    icon_name = f'{app_name}.ico' if platform_system == 'Windows' else f'{app_name}.png' # Adjust for typical non-Windows icon
+    icon_path_obj = wd / 'icons' / icon_name
+    icon_path_str = str(icon_path_obj)
+
     # Windows icon
-    if platform == 'Windows':
-        myappid = 'chatgptqt'
+    if platform_system == 'Windows':
+        myappid = 'chatgptqt' # AppUserModelID
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(icon_path)
+        # The second call to SetCurrentProcessExplicitAppUserModelID with icon_path is likely incorrect.
+        # It's usually set once with the AppID. Icon is set on the window/shortcut.
     # app
     app = QApplication(sys.argv)
-    app_icon = QIcon(icon_path)
+    app_icon = QIcon(icon_path_str)
     app.setWindowIcon(app_icon)
+
+    # Apply theme before showing the main window
+    if config_manager.get_setting('dark_theme'):
+        dark_qss = get_dark_theme_qss()
+        app.setStyleSheet(dark_qss)
+    else:
+        app.setStyleSheet("") # Ensure light theme (no custom QSS) is applied
+
     show_main_window()
     # connection
     app.aboutToQuit.connect(about_to_quit)
 
     # Desktop shortcut
     # on Windows
-    if platform == 'Windows':
+    if platform_system == 'Windows':
         desktop_path = Path.home() / 'Desktop'
         shortcut_dir = desktop_path if desktop_path.is_dir() else wd
         shortcut_bat = shortcut_dir / f'{app_name}.bat'
-        shortcut_command = f'''powershell.exe -NoExit -Command "python '{this_file}'"'''
+        # Ensure this_file is a string for the command
+        shortcut_command = f'''powershell.exe -NoExit -Command "python '{str(this_file)}'"'''
         # Create .bat for application shortcuts
         if not shortcut_bat.exists():
             with contextlib.suppress(Exception):
                 shortcut_bat.write_text(shortcut_command)
     # on macOS
-    elif platform == 'Darwin':
+    elif platform_system == 'Darwin':
         shortcut_file = Path(f'~/Desktop/{app_name}.command').expanduser()
         if not shortcut_file.is_file():
             with shortcut_file.open('w') as f:
                 f.write('#!/bin/bash\n')
-                f.write(f'cd {wd}\n')
-                f.write(f'{sys.executable} {this_file} gui\n')
-            Path(shortcut_file).chmod(0o755)
+                f.write(f'cd "{wd}"\n') # Quote wd for safety
+                f.write(f'"{sys.executable}" "{str(this_file)}" gui\n') # Quote paths
+            shortcut_file.chmod(0o755) # Path.chmod
     # additional shortcuts on Linux
-    elif platform == 'Linux':
+    elif platform_system == 'Linux':
         def desktop_file_content() -> str:
-            icon_path = wd / 'icons' / 'ChatGPTQT.png'
+            linux_icon_path = wd / 'icons' / 'ChatGPTQT.png'
             return f'''#!/usr/bin/env xdg-open
 
 [Desktop Entry]
 Version=1.0
 Type=Application
 Terminal=false
-Path={wd}
-Exec={sys.executable} {this_file}
-Icon={icon_path}
+Path={str(wd)}
+Exec="{sys.executable}" "{str(this_file)}"
+Icon={str(linux_icon_path)}
 Name=ChatGPTQT
 '''
 
-        linux_desktop_file = Path(wd) / f'{app_name}.desktop'
+        linux_desktop_file = wd / f'{app_name}.desktop'
         if not linux_desktop_file.exists():
             # Create .desktop shortcut
             with contextlib.suppress(Exception):
@@ -1716,15 +1757,17 @@ Name=ChatGPTQT
                 # Try to copy the newly created .desktop file to:
                 # ~/.local/share/applications
                 user_app_dir = Path.home() / '.local' / 'share' / 'applications'
+                user_app_dir.mkdir(parents=True, exist_ok=True) # Ensure dir exists
                 user_app_dir_shortcut = user_app_dir / f'{app_name}.desktop'
-                user_app_dir.mkdir(parents=True, exist_ok=True)
                 if not user_app_dir_shortcut.exists():
-                    copyfile(linux_desktop_file, user_app_dir_shortcut)
+                    copyfile(str(linux_desktop_file), str(user_app_dir_shortcut)) # copyfile needs strings or PathLike
                 # ~/Desktop
-                desktop_path = Path(os.environ['HOME']) / 'Desktop'
-                desktop_path_shortcut = desktop_path / f'{app_name}.desktop'
-                if not desktop_path_shortcut.is_file():
-                    copyfile(linux_desktop_file, desktop_path_shortcut)
+                # Use Path.home() for consistency
+                desktop_path = Path.home() / 'Desktop'
+                if desktop_path.is_dir(): # Check if Desktop directory exists
+                    desktop_path_shortcut = desktop_path / f'{app_name}.desktop'
+                    if not desktop_path_shortcut.is_file(): # is_file() is fine for Path
+                        copyfile(str(linux_desktop_file), str(desktop_path_shortcut))
 
     # system tray
     if config_manager.get_setting('enable_system_tray'):
