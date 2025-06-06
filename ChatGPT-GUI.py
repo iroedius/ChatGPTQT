@@ -10,10 +10,9 @@ from __future__ import annotations
 #     sphinx_installed = False
 import contextlib
 import ctypes
-import glob
 import locale
 import logging
-import os
+from os import chdir, getenv, environ # Specific imports
 import platform
 import re
 import shutil
@@ -72,9 +71,12 @@ config_manager = ConfigManager()
 this_file = Path(__file__).resolve()
 wd = this_file.parent
 if Path.cwd() != wd:
-    os.chdir(wd)
-if not Path('config.py').is_file():
-    Path('config.py').open('a').close()
+    chdir(wd) # wd is already a Path object, os.chdir() handles it.
+# Ensure config.py exists, creating it if necessary, and ensure it's closed.
+config_file = Path('config.py')
+if not config_file.is_file():
+    with config_file.open('a', encoding='utf-8'):
+        pass # Just to create the file and close it immediately
 
 
 class SpeechRecognitionThread(QThread):
@@ -374,12 +376,16 @@ class Database:
             reg = re.compile(expr, flags=re.IGNORECASE)
             return reg.search(item) is not None
 
-        default_file_path = (
-            config_manager.get_setting('chat_gpt_api_last_chat_database')
-            if config_manager.get_setting('chat_gpt_api_last_chat_database') and Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).is_file()
-            else Path(wd) / 'chats' / 'default.chat'
-        )
-        self.file_path = file_path or default_file_path
+        default_file_path_str = config_manager.get_setting('chat_gpt_api_last_chat_database')
+        # Create a Path object if the string is not empty, otherwise None
+        default_path = Path(default_file_path_str) if default_file_path_str else None
+
+        if default_path and default_path.is_file():
+            resolved_default_path = str(default_path)
+        else:
+            resolved_default_path = str(wd / 'chats' / 'default.chat')
+
+        self.file_path = file_path or resolved_default_path
         self.connection = sqlite3.connect(self.file_path)
         self.connection.create_function('REGEXP', 2, regexp)
         self.cursor = self.connection.cursor()
@@ -441,10 +447,11 @@ class ChatGPTAPI(QWidget):
         # Show a file dialog to get the file path to open
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Open Database', os.path.join(wd, 'chats', 'default.chat'), 'ChatGPTQT Database (*.chat)', options=options)
+        file_path_str, _ = QFileDialog.getOpenFileName(self, 'Open Database', str(wd / 'chats' / 'default.chat'), 'ChatGPTQT Database (*.chat)', options=options)
 
         # If the user selects a file path, open the file
-        self.database = Database(file_path)
+        if file_path_str:
+            self.database = Database(file_path_str)
         self.load_data()
         self.update_title(file_path)
         self.new_data()
@@ -456,7 +463,7 @@ class ChatGPTAPI(QWidget):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             'New Database',
-            os.path.join(wd, 'chats', self.database.file_path if copy_existing else 'new.chat'),
+            str(wd / 'chats' / (Path(self.database.file_path).name if copy_existing else 'new.chat')),
             'ChatGPTQT Database (*.chat)',
             options=options,
         )
@@ -483,7 +490,8 @@ class ChatGPTAPI(QWidget):
 
             # create a new database
             if copy_existing:
-                shutil.copy(self.database.file_path, file_path)
+                # shutil.copy can handle Path objects directly
+                shutil.copy(Path(self.database.file_path), Path(file_path))
             self.database = Database(file_path)
             self.load_data()
             self.update_title(file_path)
@@ -753,8 +761,16 @@ Higher values like 0.8 will make the output more random, while lower values like
         result = dialog.exec()
         if result == QDialog.Accepted:
             config_manager.update_setting('openai_api_key', dialog.api_key())
+            # Use getenv for safer access to environment variables
             if not openai.api_key: # This should also use the snake_case key
-                openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openai_api_key')
+                # Also, ensure the environment variable is set if the setting exists
+                api_key_from_config = config_manager.get_setting('openai_api_key')
+                if api_key_from_config:
+                    environ['OPENAI_API_KEY'] = api_key_from_config # Set it if not set by user externally
+                    openai.api_key = api_key_from_config
+                else: # if not in config, try to get from env
+                    openai.api_key = getenv('OPENAI_API_KEY')
+
             config_manager.update_setting('openai_api_organization', dialog.org())
             try:
                 max_tokens = int(dialog.max_token())
@@ -1070,20 +1086,20 @@ Follow the following steps:
         # Show a file dialog to get the file path to save
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Chat Content', os.path.join(wd, 'chats', 'chat.txt'), 'Text Files (*.txt);;Python Files (*.py);;All Files (*)', options=options,
+        file_path_str, _ = QFileDialog.getSaveFileName(
+            self, 'Export Chat Content', str(wd / 'chats' / 'chat.txt'), 'Text Files (*.txt);;Python Files (*.py);;All Files (*)', options=options,
         )
 
         # If the user selects a file path, save the file
-        if file_path:
-            with Path(file_path).open('w', encoding='utf-8') as file_obj:
+        if file_path_str:
+            with Path(file_path_str).open('w', encoding='utf-8') as file_obj:
                 file_obj.write(self.contentView.toPlainText().strip())
 
     def open_text_file_dialog(self) -> None:
         options = QFileDialog.Options()
-        file_name, filtr = QFileDialog.getOpenFileName(self, 'Open Text File', 'Text File', 'Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)', '', options)
-        if file_name:
-            with Path(file_name).open('r', encoding='utf-8') as file_obj:
+        file_name_str, _ = QFileDialog.getOpenFileName(self, 'Open Text File', str(wd), 'Plain Text Files (*.txt);;Python Scripts (*.py);;All Files (*)', '', options)
+        if file_name_str:
+            with Path(file_name_str).open('r', encoding='utf-8') as file_obj:
                 self.display_text(file_obj.read())
 
     def display_message(self, message: str = '', title: str = 'ChatGPTQT') -> None:
@@ -1272,22 +1288,22 @@ Follow the following steps:
                 self.progressBar.show()  # show progress bar
                 ChatGPTResponse(self).work_on_get_response(messages)  # get chatGPT response in a separate thread
 
-    def file_names_without_extension(self, _dir: str, ext: str) -> None:
-        files = glob.glob(os.path.join(_dir, f'*.{ext}'))
-        return sorted([file[len(_dir) + 1 : -(len(ext) + 1)] for file in files if os.path.isfile(file)])
+    def file_names_without_extension(self, directory: Path, ext: str) -> list[str]:
+        """Returns a sorted list of file stems for files with the given extension in the directory."""
+        return sorted([p.stem for p in directory.glob(f'*.{ext}') if p.is_file()])
 
-    def exec_python_file(self, script) -> None:
+    def exec_python_file(self, script_path: Path) -> None:
         if config_manager.get_setting('developer'): # developer is already snake_case
-            with open(script, encoding='utf8') as f:
-                code = compile(f.read(), script, 'exec')
+            with script_path.open(encoding='utf8') as f:
+                code = compile(f.read(), str(script_path), 'exec')
                 exec(code, globals())
         else:
             try:
-                with open(script, encoding='utf8') as f:
-                    code = compile(f.read(), script, 'exec')
+                with script_path.open(encoding='utf8') as f:
+                    code = compile(f.read(), str(script_path), 'exec')
                     exec(code, globals())
             except Exception:
-                msg = f'Failed to run "{Path(script).name}"!'
+                msg = f'Failed to run "{script_path.name}"!'
                 logging.exception(msg)
                 print(msg)
 
@@ -1300,13 +1316,14 @@ Follow the following steps:
 
         plugin_folder = Path.cwd() / 'plugins'
         # always run 'integrate google searches'
-        internet_searches = 'integrate google searches'
-        script = plugin_folder / f'{internet_searches}.py'
-        self.exec_python_file(script, self) # Pass self (ChatGPTAPI instance)
-        for plugin in self.file_names_without_extension(plugin_folder, 'py'):
-            if plugin != internet_searches and plugin not in config_manager.get_setting('chat_gpt_plugin_exclude_list'):
-                script = plugin_folder / f'{plugin}.py'
-                self.exec_python_file(script, self) # Pass self
+        internet_searches_stem = 'integrate google searches' # This is a stem
+        script_to_exec = plugin_folder / f'{internet_searches_stem}.py'
+        self.exec_python_file(script_to_exec) # Pass self (ChatGPTAPI instance)
+        # The method now correctly takes Path and returns list of stems
+        for plugin_stem in self.file_names_without_extension(plugin_folder, 'py'):
+            if plugin_stem != internet_searches_stem and plugin_stem not in config_manager.get_setting('chat_gpt_plugin_exclude_list'):
+                script_to_exec = plugin_folder / f'{plugin_stem}.py'
+                self.exec_python_file(script_to_exec) # Pass self
         # if internetSeraches in config_manager.get_setting("chat_gpt_plugin_exclude_list"):
         #     config_manager.update_setting("chat_gpt_api_function_signatures[0], ''") # Example, if needed
 
@@ -1561,8 +1578,8 @@ class MainWindow(QMainWindow):
         # reload plugins
         self.chatGPT.run_plugins()
 
-    def file_names_without_extension(self, directory: Path, ext: str) -> list:
-        return [item for item in directory.glob(f'*.{ext}') if item.is_file()]
+    def file_names_without_extension(self, directory: Path, ext: str) -> list[str]: # Returns list of stems
+        return sorted([item.stem for item in directory.glob(f'*.{ext}') if item.is_file()])
 
     def get_open_command(self) -> str:
         this_os = platform.system()
@@ -1576,13 +1593,29 @@ class MainWindow(QMainWindow):
         return open_command
 
     def open_database_directory(self) -> None:
-        database_directory = Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).parent
-        open_command = self.get_open_command()
-        os.system(f'{open_command} {database_directory}')
+        database_path_str = config_manager.get_setting('chat_gpt_api_last_chat_database')
+        if database_path_str:
+            database_directory = Path(database_path_str).parent
+            open_command = self.get_open_command()
+            if open_command:
+                try:
+                    subprocess.run([open_command, str(database_directory)], check=False)
+                except FileNotFoundError:
+                    logging.error(f"Command '{open_command}' not found.")
+                except Exception as e:
+                    logging.error(f"Error opening database directory: {e}")
+
 
     def open_plugins_directory(self) -> None:
+        plugins_dir = wd / 'plugins' # wd is a Path object
         open_command = self.get_open_command()
-        os.system(f'{open_command} plugins')
+        if open_command:
+            try:
+                subprocess.run([open_command, str(plugins_dir)], check=False)
+            except FileNotFoundError:
+                logging.error(f"Command '{open_command}' not found.")
+            except Exception as e:
+                logging.error(f"Error opening plugins directory: {e}")
 
     def toggle_regexp(self) -> None:
         current_value = config_manager.get_setting('regexp_search_enabled')
@@ -1604,7 +1637,7 @@ class MainWindow(QMainWindow):
 
     # Work with system tray
     def is_wayland(self) -> bool:
-        return bool(platform.system() == 'Linux' and os.getenv('QT_QPA_PLATFORM') is not None and os.getenv('QT_QPA_PLATFORM') == 'wayland')
+        return bool(platform.system() == 'Linux' and getenv('QT_QPA_PLATFORM') == 'wayland')
 
     def bring_to_foreground(self, window: QMainWindow) -> None:
         if window and not (window.isVisible() and window.isActiveWindow()):
@@ -1676,17 +1709,17 @@ if __name__ == '__main__':
     # on Windows
     if platform == 'Windows':
         desktop_path = Path.home() / 'Desktop'
-        shortcut_dir = desktop_path if desktop_path.is_dir() else wd
+        shortcut_dir = desktop_path if desktop_path.is_dir() else wd # wd is Path, desktop_path is Path
         shortcut_bat = shortcut_dir / f'{app_name}.bat'
-        shortcut_command = f'''powershell.exe -NoExit -Command "python '{this_file}'"'''
+        shortcut_command = f'''powershell.exe -NoExit -Command "python '{str(this_file)}'"'''
         # Create .bat for application shortcuts
-        if not shortcut_bat.exists():
+        if not shortcut_bat.exists(): # Using Path.exists()
             with contextlib.suppress(Exception):
                 shortcut_bat.write_text(shortcut_command)
     # on macOS
     elif platform == 'Darwin':
         shortcut_file = Path(f'~/Desktop/{app_name}.command').expanduser()
-        if not shortcut_file.is_file():
+        if not shortcut_file.is_file(): # Using Path.is_file()
             with shortcut_file.open('w') as f:
                 f.write('#!/bin/bash\n')
                 f.write(f'cd {wd}\n')
@@ -1708,8 +1741,8 @@ Icon={icon_path}
 Name=ChatGPTQT
 '''
 
-        linux_desktop_file = Path(wd) / f'{app_name}.desktop'
-        if not linux_desktop_file.exists():
+        linux_desktop_file = wd / f'{app_name}.desktop' # wd is Path
+        if not linux_desktop_file.exists(): # Using Path.exists()
             # Create .desktop shortcut
             with contextlib.suppress(Exception):
                 linux_desktop_file.write_text(desktop_file_content(), encoding=locale.getpreferredencoding(do_setlocale=False))
@@ -1718,13 +1751,18 @@ Name=ChatGPTQT
                 user_app_dir = Path.home() / '.local' / 'share' / 'applications'
                 user_app_dir_shortcut = user_app_dir / f'{app_name}.desktop'
                 user_app_dir.mkdir(parents=True, exist_ok=True)
-                if not user_app_dir_shortcut.exists():
+                if not user_app_dir_shortcut.exists(): # Using Path.exists()
+                    # shutil.copyfile can handle Path objects directly
                     copyfile(linux_desktop_file, user_app_dir_shortcut)
                 # ~/Desktop
-                desktop_path = Path(os.environ['HOME']) / 'Desktop'
-                desktop_path_shortcut = desktop_path / f'{app_name}.desktop'
-                if not desktop_path_shortcut.is_file():
-                    copyfile(linux_desktop_file, desktop_path_shortcut)
+                home_env = getenv('HOME')
+                if home_env:
+                    desktop_path = Path(home_env) / 'Desktop'
+                    if desktop_path.is_dir(): # Using Path.is_dir()
+                        desktop_path_shortcut = desktop_path / f'{app_name}.desktop'
+                        if not desktop_path_shortcut.is_file(): # Using Path.is_file()
+                            # shutil.copyfile can handle Path objects directly
+                            copyfile(linux_desktop_file, desktop_path_shortcut)
 
     # system tray
     if config_manager.get_setting('enable_system_tray'):
