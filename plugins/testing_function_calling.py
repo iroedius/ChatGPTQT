@@ -1,5 +1,7 @@
-import config, json
+import json
 
+# 'config_manager' and 'chat_gpt_api' (if needed) are injected into the global scope.
+# No need to 'import config'
 
 # modified from source: https://platform.openai.com/docs/guides/gpt/function-calling
 
@@ -33,5 +35,16 @@ functionSignature = {
     },
 }
 
-config.chatGPTApiFunctionSignatures.append(functionSignature)
-config.chatGPTApiAvailableFunctions["get_current_weather"] = get_current_weather
+# Update chat_gpt_api_function_signatures
+signatures = config_manager.get_setting('chat_gpt_api_function_signatures')
+if not isinstance(signatures, list):
+    signatures = []
+signatures.append(functionSignature)
+config_manager.update_setting('chat_gpt_api_function_signatures', signatures)
+
+# Update chat_gpt_api_available_functions
+available_functions = config_manager.get_setting('chat_gpt_api_available_functions')
+if not isinstance(available_functions, dict):
+    available_functions = {}
+available_functions["get_current_weather"] = get_current_weather
+config_manager.update_setting('chat_gpt_api_available_functions', available_functions)

@@ -32,7 +32,7 @@ from shutil import copyfile
 from typing import Any
 
 import openai
-import qdarktheme
+import pyqtdarktheme as qdarktheme
 import tiktoken
 from gtts import gTTS
 from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QThread, Signal
@@ -65,6 +65,7 @@ from PySide6.QtWidgets import (
 
 from config_manager import ConfigManager
 from util.Worker import ChatGPTResponse, OpenAIImage
+from llm_providers import LLMProvider, OpenAIProvider, GeminiProvider # Added GeminiProvider
 
 config_manager = ConfigManager()
 
@@ -85,14 +86,14 @@ class SpeechRecognitionThread(QThread):
 
     def run(self) -> None:
         self.is_running = True
-        # if config_manager.get_setting('pocketsphinxModelPath'):
+        # if config_manager.get_setting('pocketsphinx_model_path'):
         #     # download English dictionary at: http://www.speech.cs.cmu.edu/cgi-bin/cmudict
         #     # download voice models at https://sourceforge.net/projects/cmusphinx/files/Acoustic%20and%20Language%20Models/
         #     speech = LiveSpeech(
         #         # sampling_rate=16000,  # optional
-        #         hmm=get_model_path(config_manager.get_setting('pocketsphinxModelPath')),
-        #         lm=get_model_path(config_manager.get_setting('pocketsphinxModelPathBin')),
-        #         dic=get_model_path(config_manager.get_setting('pocketsphinxModelPathDict')),
+        #         hmm=get_model_path(config_manager.get_setting('pocketsphinx_model_path')),
+        #         lm=get_model_path(config_manager.get_setting('pocketsphinx_model_path_bin')),
+        #         dic=get_model_path(config_manager.get_setting('pocketsphinx_model_path_dict')),
         #     )
         # else:
         #     speech = LiveSpeech()
@@ -168,10 +169,20 @@ Most models have a context length of 2048 tokens (except for the newest models, 
         self.predefinedContextBox = QComboBox()
         initial_index = 0
         index = 0
-        for key, value in config_manager.get_internal('predefinedContexts').items():
+        # TODO: Ensure 'predefined_contexts' is a dictionary as expected.
+        # If it's a string representation of a dict, it needs parsing first.
+        # For now, assuming it's already a dictionary.
+        predefined_contexts_setting = config_manager.get_setting('predefined_contexts')
+        if isinstance(predefined_contexts_setting, str):
+            try:
+                predefined_contexts_setting = literal_eval(predefined_contexts_setting)
+            except (ValueError, SyntaxError):
+                predefined_contexts_setting = {} # Default to empty if parsing fails
+
+        for key, value in predefined_contexts_setting.items():
             self.predefinedContextBox.addItem(key)
             self.predefinedContextBox.setItemData(self.predefinedContextBox.count() - 1, value, role=Qt.ToolTipRole)
-            if key == config_manager.get_setting('chatGPTApiPredefinedContext'):
+            if key == config_manager.get_setting('chat_gpt_api_predefined_context'):
                 initial_index = index
             index += 1
         self.predefinedContextBox.currentIndexChanged.connect(self.predefined_context_box_changed)
@@ -214,9 +225,79 @@ Most models have a context length of 2048 tokens (except for the newest models, 
         self.functionCallingBox.currentIndexChanged.connect(self.dunction_calling_box_changes)
         self.loadingInternetSearchesBox.currentIndexChanged.connect(self.loading_internet_searches_box_changes)
 
+        # Gemini settings
+        self.geminiApiKeyEdit = QLineEdit(config_manager.get_setting('gemini_api_key'))
+        self.geminiApiKeyEdit.setEchoMode(QLineEdit.Password)
+        self.geminiModelNameEdit = QLineEdit(config_manager.get_setting('gemini_model_name'))
+
+        self.llmProviderBox = QComboBox()
+        providers = ["openai", "gemini"]
+        current_provider = config_manager.get_setting('selected_llm_provider')
+        self.llmProviderBox.addItems(providers)
+        if current_provider in providers:
+            self.llmProviderBox.setCurrentIndex(providers.index(current_provider))
+        else:
+            self.llmProviderBox.setCurrentIndex(0) # Default to openai
+
+        # Store references to rows for visibility toggling
+        self.openai_model_row_widgets = [self.apiModelBox] # Assuming apiModelBox is for OpenAI
+        self.gemini_model_row_widgets = [self.geminiModelNameEdit, self.geminiApiKeyEdit] # Gemini API key is also Gemini-specific here
+
+        # Add LLM Provider and common OpenAI settings
+        layout.addRow(f'LLM Provider:', self.llmProviderBox)
+        self.openai_api_key_label = QLabel(f'OpenAI API Key [{optional}]:') # Need to access label too
+        layout.addRow(self.openai_api_key_label, self.apiKeyEdit)
+        self.org_label = QLabel(f'Organization ID [{optional}]:')
+        layout.addRow(self.org_label, self.orgEdit)
+        self.openai_model_label = QLabel(f'OpenAI API Model [{required}]:')
+        layout.addRow(self.openai_model_label, self.apiModelBox)
+
+        # Add Gemini Rows (will be shown/hidden)
+        self.gemini_api_key_label = QLabel(f'Gemini API Key [{optional}]:')
+        layout.addRow(self.gemini_api_key_label, self.geminiApiKeyEdit)
+        self.gemini_model_label = QLabel(f'Gemini Model Name [{optional}]:')
+        layout.addRow(self.gemini_model_label, self.geminiModelNameEdit)
+
+        # Connect provider change signal
+        self.llmProviderBox.currentIndexChanged.connect(self.update_model_fields_visibility)
+        self.update_model_fields_visibility() # Initial call to set correct visibility
+
         self.setLayout(layout)
 
-    def api_key(self) -> str:
+    def update_model_fields_visibility(self):
+        provider = self.llmProviderBox.currentText()
+        is_openai = provider == 'openai'
+        is_gemini = provider == 'gemini'
+
+        # Toggle OpenAI specific fields
+        self.apiKeyEdit.setVisible(is_openai)
+        self.openai_api_key_label.setVisible(is_openai)
+        self.orgEdit.setVisible(is_openai)
+        self.org_label.setVisible(is_openai)
+        self.apiModelBox.setVisible(is_openai)
+        self.openai_model_label.setVisible(is_openai)
+        # Potentially populate self.apiModelBox here if it's empty and OpenAI is selected
+        if is_openai and self.apiModelBox.count() == 0:
+             # This is a temporary fix; ideally, the dialog gets the provider instance or model list
+            try:
+                temp_openai_provider = OpenAIProvider(config_manager) # config_manager is global here
+                models = temp_openai_provider.get_available_models()
+                self.apiModelBox.addItems(models)
+                current_openai_model = config_manager.get_setting('chat_gpt_api_model')
+                if current_openai_model in models:
+                    self.apiModelBox.setCurrentText(current_openai_model)
+            except Exception as e:
+                print(f"Error populating OpenAI models: {e}")
+
+
+        # Toggle Gemini specific fields
+        self.geminiApiKeyEdit.setVisible(is_gemini)
+        self.gemini_api_key_label.setVisible(is_gemini)
+        self.geminiModelNameEdit.setVisible(is_gemini)
+        self.gemini_model_label.setVisible(is_gemini)
+
+
+    def api_key(self) -> str: # This now specifically refers to OpenAI API Key
         return self.apiKeyEdit.text().strip()
 
     def org(self) -> str:
@@ -277,6 +358,15 @@ Most models have a context length of 2048 tokens (except for the newest models, 
     def max_internet_search_results(self) -> str:
         return self.maxInternetSearchResults.text().strip()
 
+    def gemini_api_key(self) -> str:
+        return self.geminiApiKeyEdit.text().strip()
+
+    def gemini_model_name(self) -> str:
+        return self.geminiModelNameEdit.text().strip()
+
+    def selected_llm_provider(self) -> str:
+        return self.llmProviderBox.currentText()
+
 
 class Database:
     def __init__(self, file_path: str = '') -> None:
@@ -285,8 +375,8 @@ class Database:
             return reg.search(item) is not None
 
         default_file_path = (
-            config_manager.get_setting('chatGPTApiLastChatDatabase')
-            if config_manager.get_setting('chatGPTApiLastChatDatabase') and Path(config_manager.get_setting('chatGPTApiLastChatDatabase')).is_file()
+            config_manager.get_setting('chat_gpt_api_last_chat_database')
+            if config_manager.get_setting('chat_gpt_api_last_chat_database') and Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).is_file()
             else Path(wd) / 'chats' / 'default.chat'
         )
         self.file_path = file_path or default_file_path
@@ -309,7 +399,7 @@ class Database:
             self.connection.commit()
 
     def search(self, title: str, content: str) -> list[Any]:
-        if config_manager.get_setting('regexpSearchEnabled'):
+        if config_manager.get_setting('regexp_search_enabled'):
             # with regex
             self.cursor.execute('SELECT * FROM data WHERE title REGEXP ? AND content REGEXP ?', (title, content))
         else:
@@ -330,15 +420,12 @@ class ChatGPTAPI(QWidget):
     def __init__(self, parent: Any) -> None:
         super().__init__()
         # config.chatGPTApi = self
-        config_manager.update_internal('chatGPTApi', self)
         self.parent = parent
-        # required
-        openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openaiApiKey')
-        # optional
-        if config_manager.get_setting('openaiApiOrganization'):
-            openai.organization = config_manager.get_setting('openaiApiOrganization')
-        # set title
-        self.setWindowTitle('ChatGPTQT')
+
+        # LLM Provider will be initialized here
+        self.llm_provider: LLMProvider = None
+        self.initialize_llm_provider()
+
         # set variables
         self.setup_variables()
         # run plugins
@@ -405,7 +492,7 @@ class ChatGPTAPI(QWidget):
     def update_title(self, file_path: str | Path = '') -> None:
         if not file_path:
             file_path = self.database.file_path
-        config_manager.update_setting('chatGPTApiLastChatDatabase', str(file_path))
+        config_manager.update_setting('chat_gpt_api_last_chat_database', str(file_path))
         basename = Path(file_path).name
         self.parent.setWindowTitle(f'ChatGPTQT - {basename}')
 
@@ -439,7 +526,7 @@ class ChatGPTAPI(QWidget):
         self.replaceInput = QLineEdit()
         self.replaceInput.setClearButtonEnabled(True)
         self.userInput = QLineEdit()
-        completer = QCompleter(config_manager.get_setting('inputSuggestions'))
+        completer = QCompleter(config_manager.get_setting('input_suggestions'))
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.userInput.setCompleter(completer)
         self.userInput.setPlaceholderText(config_manager.get_translation('messageHere'))
@@ -477,16 +564,16 @@ class ChatGPTAPI(QWidget):
         self.editableCheckbox = QCheckBox(config_manager.get_translation('editable'))
         self.editableCheckbox.setCheckState(Qt.Unchecked)
         # self.audioCheckbox = QCheckBox(config_manager.get_setting("this_translation").audio)
-        # self.audioCheckbox.setCheckState(Qt.Checked if config_manager.get_setting("chatGPTApiAudio") else Qt.Unchecked)
+        # self.audioCheckbox.setCheckState(Qt.Checked if config_manager.get_setting("chat_gpt_api_audio") else Qt.Unchecked)
         self.choiceNumber = QComboBox()
         self.choiceNumber.addItems([str(i) for i in range(1, 11)])
-        self.choiceNumber.setCurrentIndex(int(config_manager.get_setting('chatGPTApiNoOfChoices')) - 1)
+        self.choiceNumber.setCurrentIndex(config_manager.get_setting('chat_gpt_api_no_of_choices') - 1)
         self.fontSize = QComboBox()
         self.fontSize.addItems([str(i) for i in range(1, 51)])
-        self.fontSize.setCurrentIndex(int(config_manager.get_setting('fontSize')) - 1)
+        self.fontSize.setCurrentIndex(config_manager.get_setting('font_size') - 1)
         self.temperature = QComboBox()
         self.temperature.addItems([str(i / 10) for i in range(21)])
-        self.temperature.setCurrentIndex(int(config_manager.get_setting('chatGPTApiTemperature') * 10))
+        self.temperature.setCurrentIndex(int(config_manager.get_setting('chat_gpt_api_temperature') * 10))
         temperature_label = QLabel(config_manager.get_translation('temperature'))
         temperature_label.setAlignment(Qt.AlignRight)
         temperature_label.setToolTip('''What sampling temperature to use, between 0 and 2.
@@ -598,18 +685,18 @@ Higher values like 0.8 will make the output more random, while lower values like
 
     def set_font_size(self, index: int | None = None) -> None:
         if index is not None:
-            config_manager.update_setting('fontSize', str(index + 1))
+            config_manager.update_setting('font_size', index + 1)
         # content view
         font = self.contentView.font()
-        font.setPointSize(int(config_manager.get_setting('fontSize')))
+        font.setPointSize(config_manager.get_setting('font_size'))
         self.contentView.setFont(font)
         # list view
         font = self.listView.font()
-        font.setPointSize(int(config_manager.get_setting('fontSize')))
+        font.setPointSize(config_manager.get_setting('font_size'))
         self.listView.setFont(font)
 
     def update_search_tool_tips(self) -> None:
-        if config_manager.get_setting('regexpSearchEnabled'):
+        if config_manager.get_setting('regexp_search_enabled'):
             self.searchTitle.setToolTip(config_manager.get_translation('matchingRegularExpression'))
             self.searchContent.setToolTip(config_manager.get_translation('matchingRegularExpression'))
             self.searchInput.setToolTip(config_manager.get_translation('matchingRegularExpression'))
@@ -619,7 +706,7 @@ Higher values like 0.8 will make the output more random, while lower values like
             self.searchInput.setToolTip('')
 
     def search_chat_content(self) -> None:
-        search = QRegularExpression(self.searchInput.text()) if config_manager.get_setting('regexpSearchEnabled') else self.searchInput.text()
+        search = QRegularExpression(self.searchInput.text()) if config_manager.get_setting('regexp_search_enabled') else self.searchInput.text()
         self.contentView.find(search)
 
     def replace_selected_text(self) -> None:
@@ -630,7 +717,7 @@ Higher values like 0.8 will make the output more random, while lower values like
             if search_input:
                 replace = (
                     re.sub(search_input, replace_input, current_selected_text)
-                    if config_manager.get_setting('regexpSearchEnabled')
+                    if config_manager.get_setting('regexp_search_enabled')
                     else current_selected_text.replace(search_input, replace_input)
                 )
             else:
@@ -642,7 +729,7 @@ Higher values like 0.8 will make the output more random, while lower values like
         if search:
             replace = self.replaceInput.text()
             content = self.contentView.toPlainText()
-            new_content = re.sub(search, replace, content, flags=re.MULTILINE) if config_manager.get_setting('regexpSearchEnabled') else content.replace(search, replace)
+            new_content = re.sub(search, replace, content, flags=re.MULTILINE) if config_manager.get_setting('regexp_search_enabled') else content.replace(search, replace)
             self.contentView.setPlainText(new_content)
 
     def multiline_button_clicked(self) -> None:
@@ -665,55 +752,101 @@ Higher values like 0.8 will make the output more random, while lower values like
         dialog = ApiDialog(self)
         result = dialog.exec()
         if result == QDialog.Accepted:
-            config_manager.update_setting('openaiApiKey', dialog.api_key())
-            if not openai.api_key:
-                openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openaiApiKey')
-            config_manager.update_setting('openaiApiOrganization', dialog.org())
+            config_manager.update_setting('openai_api_key', dialog.api_key())
+            if not openai.api_key: # This should also use the snake_case key
+                openai.api_key = os.environ['OPENAI_API_KEY'] = config_manager.get_setting('openai_api_key')
+            config_manager.update_setting('openai_api_organization', dialog.org())
             try:
-                config_manager.update_setting('chatGPTApiMaxTokens', dialog.max_token())
+                max_tokens = int(dialog.max_token())
                 min_value = 20
-                if int(config_manager.get_setting('chatGPTApiMaxTokens')) < min_value:
-                    config_manager.update_setting('chatGPTApiMaxTokens', str(min_value))
-            except Exception:
-                logging.exception('Exception while updating chatGPTApiMaxTokens')
+                if max_tokens < min_value:
+                    max_tokens = min_value
+                config_manager.update_setting('chat_gpt_api_max_tokens', max_tokens)
+            except ValueError:
+                logging.exception('Invalid value for chatGPTApiMaxTokens')
             try:
-                config_manager.update_setting('maximumInternetSearchResults', dialog.max_internet_search_results())
+                max_results = int(dialog.max_internet_search_results())
                 max_value = 100
-                if int(config_manager.get_setting('maximumInternetSearchResults')) <= 0:
-                    config_manager.update_setting('maximumInternetSearchResults', '1')
-                elif int(config_manager.get_setting('maximumInternetSearchResults')) > max_value:
-                    config_manager.update_setting('maximumInternetSearchResults', str(max_value))
-            except Exception:
-                logging.exception('Exception while getting maximumInternetSearchResults')
-            # config_manager.update_setting("includeDuckDuckGoSearchResults") = dialog.include_internet_searches()
-            config_manager.update_setting('chatGPTApiAutoScrolling', dialog.enable_auto_scrolling())
-            config_manager.update_setting('runPythonScriptGlobally', dialog.enable_run_python_script_globally())
-            config_manager.update_setting('chatAfterFunctionCalled', dialog.enable_chat_after_function_called())
-            config_manager.update_setting('chatGPTApiModel', dialog.api_model())
-            config_manager.update_setting('chatGPTApiFunctionCall', dialog.function_calling())
-            config_manager.update_setting('loadingInternetSearches', dialog.loading_internet_searches())
+                if max_results <= 0:
+                    max_results = 1
+                elif max_results > max_value:
+                    max_results = max_value
+                config_manager.update_setting('maximum_internet_search_results', max_results)
+            except ValueError:
+                logging.exception('Invalid value for maximumInternetSearchResults')
+
+            config_manager.update_setting('chat_gpt_api_auto_scrolling', dialog.enable_auto_scrolling())
+            config_manager.update_setting('run_python_script_globally', dialog.enable_run_python_script_globally())
+            config_manager.update_setting('chat_after_function_called', dialog.enable_chat_after_function_called())
+
+            # Save model based on selected provider
+            selected_provider = dialog.selected_llm_provider()
+            if selected_provider == 'openai':
+                config_manager.update_setting('chat_gpt_api_model', dialog.api_model())
+            elif selected_provider == 'gemini':
+                config_manager.update_setting('gemini_model_name', dialog.gemini_model_name())
+
+            config_manager.update_setting('chat_gpt_api_function_call', dialog.function_calling()) # This is OpenAI specific
+            config_manager.update_setting('loading_internet_searches', dialog.loading_internet_searches())
+
             internet_searches = 'integrate google searches'
-            if config_manager.get_setting('loadingInternetSearches') == 'auto' and internet_searches in config_manager.get_setting('chatGPTPluginExcludeList'):
-                config_manager.update_setting('chatGPTPluginExcludeList.remove', internet_searches)
-                self.parent.reloadMenubar()
-            elif config_manager.get_setting('loadingInternetSearches') == 'none' and internet_searches not in config_manager.get_setting(chatGPTPluginExcludeList):
-                config_manager.update_setting('chatGPTPluginExcludeList.append', internet_searches)
-                self.parent.reloadMenubar()
+            exclude_list = config_manager.get_setting('chat_gpt_plugin_exclude_list')
+            current_loading_behavior = config_manager.get_setting('loading_internet_searches')
+
+            if current_loading_behavior == 'auto':
+                if internet_searches in exclude_list:
+                    exclude_list.remove(internet_searches)
+                    config_manager.update_setting('chat_gpt_plugin_exclude_list', exclude_list)
+                    self.parent.reloadMenubar()
+            elif current_loading_behavior == 'none':
+                if internet_searches not in exclude_list:
+                    exclude_list.append(internet_searches)
+                    config_manager.update_setting('chat_gpt_plugin_exclude_list', exclude_list)
+                    self.parent.reloadMenubar()
+
             self.run_plugins()
-            config_manager.update_setting('chatGPTApiPredefinedContext', dialog.predefined_context())
-            config_manager.update_setting('chatGPTApiContextInAllInputs', dialog.context_in_all_inputs())
-            config_manager.update_setting('chatGPTApiContext', dialog.context())
-            # config_manager.get_setting("chatGPTApiAudioLanguage") = dialog.language()
+            config_manager.update_setting('chat_gpt_api_predefined_context', dialog.predefined_context())
+            config_manager.update_setting('chat_gpt_api_context_in_all_inputs', dialog.context_in_all_inputs())
+            config_manager.update_setting('chat_gpt_api_context', dialog.context())
+
+            # Save Gemini settings
+            config_manager.update_setting('gemini_api_key', dialog.gemini_api_key())
+            config_manager.update_setting('gemini_model_name', dialog.gemini_model_name())
+            config_manager.update_setting('selected_llm_provider', dialog.selected_llm_provider())
+
+            # config_manager.get_setting("chat_gpt_api_audio_language") = dialog.language()
             self.new_data()
+            # Potentially reload or re-initialize parts of the UI if LLM provider changes
+            self.initialize_llm_provider() # Re-initialize provider on settings change
+            # self.parent.setWindowTitle(f"ChatGPTQT - LLM: {config_manager.get_setting('selected_llm_provider').upper()}") # initialize_llm_provider will do this
+
+
+    def initialize_llm_provider(self) -> None:
+        provider_name = self.config_manager.get_setting('selected_llm_provider')
+        if provider_name == 'gemini':
+            self.llm_provider = GeminiProvider(self.config_manager)
+        elif provider_name == 'openai':
+            self.llm_provider = OpenAIProvider(self.config_manager)
+        else:
+            # Default to OpenAI if setting is invalid or not set
+            self.config_manager.update_setting('selected_llm_provider', 'openai')
+            self.llm_provider = OpenAIProvider(self.config_manager)
+
+        # self.llm_provider.load_config() # Already called in provider's __init__
+
+        # Update window title
+        if self.parent: # Ensure parent (MainWindow) is set
+             self.parent.setWindowTitle(f"ChatGPTQT - LLM: {self.config_manager.get_setting('selected_llm_provider').upper()}")
+
 
     def update_api_model(self, index: int) -> None:
         self.apiModel = index
 
     def update_temperature(self, index: int) -> None:
-        config_manager.update_setting('chatGPTApiTemperature', float(index / 10))
+        config_manager.update_setting('chat_gpt_api_temperature', float(index / 10))
 
     def update_choise_number(self, index: int) -> None:
-        config_manager.update_setting('chatGPTApiNoOfChoices', index + 1)
+        config_manager.update_setting('chat_gpt_api_no_of_choices', index + 1)
 
     def on_phrase_recognized(self, phrase: str) -> None:
         self.userInput.setText(f'{self.userInput.text()} {phrase}')
@@ -725,8 +858,8 @@ Higher values like 0.8 will make the output more random, while lower values like
         self.contentView.setReadOnly(not state)
 
     def toggle_chatgpt_api_audio(self, state: bool) -> None:
-        config_manager.update_setting('chatGPTApiAudio', state)
-        if not config_manager.get_setting('chatGPTApiAudio'):
+        config_manager.update_setting('chat_gpt_api_audio', state)
+        if not config_manager.get_setting('chat_gpt_api_audio'):
             self.close_media_player()
 
     def no_text_selection(self) -> None:
@@ -800,7 +933,7 @@ Higher values like 0.8 will make the output more random, while lower values like
             sys.stdout = output
             # Execute the Python string in global namespace
             try:
-                exec(command, globals()) if config_manager.get_setting('runPythonScriptGlobally') else exec(command)
+                exec(command, globals()) if config_manager.get_setting('run_python_script_globally') else exec(command)
                 captured_output = output.getvalue()
             except Exception:
                 captured_output = traceback.format_exc()
@@ -880,7 +1013,7 @@ Higher values like 0.8 will make the output more random, while lower values like
 
     def chat_action(self, context: str = '') -> None:
         if context:
-            config_manager.update_setting('chatGPTApiPredefinedContext', context)
+            config_manager.update_setting('chat_gpt_api_predefined_context', context)
         current_selected_text = self.contentView.textCursor().selectedText().strip()
         if current_selected_text:
             self.new_data()
@@ -890,16 +1023,29 @@ Higher values like 0.8 will make the output more random, while lower values like
     def new_data(self) -> None:
         if not self.busyLoading:
             self.contentID = ''
-            self.contentView.setPlainText(
-                ''
-                if openai.api_key
-                else '''OpenAI API Key is NOT Found!
+            self.contentView.setPlainText(self.get_initial_message())
+            self.set_uset_input_focus()
+
+    def get_initial_message(self) -> str:
+        provider = config_manager.get_setting('selected_llm_provider')
+        if provider == 'openai':
+            if config_manager.get_setting('openai_api_key'):
+                return '' # API key present, no special message needed
+            return '''OpenAI API Key is NOT Found!
 
 Follow the following steps:
 1) Register and get your OpenAI Key at https://platform.openai.com/account/api-keys
-2) Click the "Settings" button below and enter your own OpenAI API key''',
-            )
-            self.set_uset_input_focus()
+2) Click the "Settings" button below and enter your own OpenAI API key'''
+        elif provider == 'gemini':
+            if config_manager.get_setting('gemini_api_key'):
+                return '' # API key present, no special message needed
+            return '''Gemini API Key is NOT Found!
+
+Follow the following steps:
+1) Enable the Gemini API in your Google Cloud project & create an API key.
+   (Search for "Vertex AI Studio" -> "APIs & Services" -> "Enable APIs and Services" -> search for "Generative Language API" and enable it. Then create credentials.)
+2) Click the "Settings" button below and enter your Gemini API key.'''
+        return "No LLM provider selected or provider unknown. Please check settings."
 
     def select_data(self, index: QModelIndex) -> None:
         if not self.busyLoading:
@@ -945,102 +1091,108 @@ Follow the following steps:
 
     # The following method was modified from source:
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-    def num_tokens_from_messages(self, model: str = '') -> int | None:
-        if not model:
-            model = config_manager.get_setting('chatGPTApiModel')
-        user_input = self.userInput.text().strip()
-        messages = self.get_messages(user_input)
+    # This method is OpenAI specific and uses tiktoken.
+    # It would need to be moved to OpenAIProvider or a new method added to LLMProvider abstraction
+    # if token counting is desired for all providers.
+    # For now, commenting it out from ChatGPTAPI.
+    # def num_tokens_from_messages(self, model: str = '') -> int | None:
+    #     if not model:
+    #         # This should get the model for the *current* LLM provider
+    #         if self.llm_provider and hasattr(self.llm_provider, 'model_name'):
+    #             model = self.llm_provider.model_name
+    #         else: # Fallback or error if provider/model not set
+    #             print("Error: LLM Provider or model not set for token counting.")
+    #             return None
 
-        '''Return the number of tokens used by a list of messages.'''
-        try:
-            encoding = tiktoken.encoding_for_model(model)
-        except KeyError:
-            print('Warning: model not found. Using cl100k_base encoding.')
-            encoding = tiktoken.get_encoding('cl100k_base')
-        # encoding = tiktoken.get_encoding("cl100k_base")
-        if model in {'gpt-4-turbo-preview', 'gpt-4-0125-preview', 'gpt-4-1106-preview', 'gpt-3.5-turbo', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106'}:
-            tokens_per_message = 3
-            tokens_per_name = 1
-        elif model in {'gpt-4', 'gpt-4-0613'}:
-            # print("Warning: gpt-4 may update over time. Returning num tokens assuming gpt-4-0613.")
-            return self.num_tokens_from_messages(messages, model='gpt-4-0613')
-        else:
-            msg = (
-                f'''num_tokens_from_messages() is not implemented for model {model}.
-                See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.'''
-            )
-            raise NotImplementedError(
-                msg,
-            )
-        num_tokens = 0
-        for message in messages:
-            num_tokens += tokens_per_message
-            for key, value in message.items():
-                num_tokens += len(encoding.encode(value))
-                if key == 'name':
-                    num_tokens += tokens_per_name
-        num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
-        # return num_tokens
-        self.display_message(message=f'{num_tokens} prompt tokens counted!')
-        return None
+    #     # Ensure this is only called if it's an OpenAI model, or adapt for Gemini if it has similar token counting
+    #     if not (model.startswith("gpt-") or model.startswith("text-davinci-")): # Basic check
+    #         print(f"Token counting not implemented for model: {model}")
+    #         return None
 
-    def get_context(self) -> str:
-        if config_manager.get_setting('chatGPTApiPredefinedContext') not in config_manager.get_setting('predefinedContexts'):
-            config_manager.update_setting('chatGPTApiPredefinedContext', '[none]')
-        if config_manager.get_setting('chatGPTApiPredefinedContext') == '[none]':
-            # no context
-            context = ''
-        elif config_manager.get_setting('chatGPTApiPredefinedContext') == '[custom]':
-            # custom input in the settings dialog
-            context = config_manager.get_setting('chatGPTApiContext')
-        else:
-            # users can modify config_manager.get_setting("predefinedContexts") via plugins
-            context = config_manager.get_internal('predefinedContexts')[config_manager.get_setting('chatGPTApiPredefinedContext')]
-            # change config for particular contexts
-            if config_manager.get_setting('chatGPTApiPredefinedContext') == 'Execute Python Code':
-                if config_manager.get_setting('chatGPTApiFunctionCall') == 'none':
-                    config_manager.get_setting('chatGPTApiFunctionCall', 'auto')
-                if config_manager.get_setting('loadingInternetSearches') == 'always':
-                    config_manager.get_setting('loadingInternetSearches', 'auto')
-        return context
+    #     user_input = self.userInput.text().strip()
+    #     # get_messages was removed, need chat_history and current prompt
+    #     # This part needs significant rework to fit the new structure if re-enabled.
+    #     # messages = self.get_messages(user_input) # Old call
+    #     chat_history = self.get_chat_history_from_view()
+    #     messages_for_token_count = chat_history + [{'role': 'user', 'content': user_input}]
 
-    def get_messages(self, user_input: str) -> list:
-        # system message
-        system_message = "You're a kind helpful assistant."
-        if config_manager.get_setting('chatGPTApiFunctionCall') == 'auto' and config_manager.get_setting('chatGPTApiFunctionSignatures'):
-            system_message += ' Only use the functions you have been provided with.'
-        messages = [{'role': 'system', 'content': system_message}]
-        # predefine context
-        context = self.get_context()
-        # chat history
-        history = self.contentView.toPlainText().strip()
-        if history:
-            if (
-                context
-                and config_manager.get_setting('chatGPTApiPredefinedContext') != 'Execute Python Code'
-                and not config_manager.get_setting('chatGPTApiContextInAllInputs')
-            ):
-                messages.append({'role': 'assistant', 'content': context})
-            if history.startswith('>>> '):
-                history = history[4:]
-            exchanges = [exchange for exchange in history.split('\n>>> ') if exchange.strip()]
+
+    #     '''Return the number of tokens used by a list of messages.'''
+    #     try:
+    #         encoding = tiktoken.encoding_for_model(model)
+    #     except KeyError:
+    #         print('Warning: model not found. Using cl100k_base encoding.')
+    #         encoding = tiktoken.get_encoding('cl100k_base')
+    #     # encoding = tiktoken.get_encoding("cl100k_base")
+    #     if model in {'gpt-4-turbo-preview', 'gpt-4-0125-preview', 'gpt-4-1106-preview', 'gpt-3.5-turbo', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106'}:
+    #         tokens_per_message = 3
+    #         tokens_per_name = 1
+    #     elif model in {'gpt-4', 'gpt-4-0613'}: # Add other models as needed
+    #         tokens_per_message = 3
+    #         tokens_per_name = 1
+    #     # elif model.startswith("text-davinci-"):
+    #     #     tokens_per_message = 0 # Different for older completion models
+    #     #     tokens_per_name = 0
+    #     else:
+    #         msg = (
+    #             f'''num_tokens_from_messages() is not implemented for model {model}.
+    #             See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.'''
+    #         )
+    #         # raise NotImplementedError(msg) # Avoid raising error for now
+    #         print(msg)
+    #         return None
+
+    #     num_tokens = 0
+    #     for message in messages_for_token_count:
+    #         num_tokens += tokens_per_message
+    #         for key, value in message.items():
+    #             if value: # Ensure value is not None
+    #                 num_tokens += len(encoding.encode(str(value)))
+    #             if key == 'name': # Function calling specific
+    #                 num_tokens += tokens_per_name
+    #     num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+    #     self.display_message(message=f'{num_tokens} prompt tokens counted for model {model} (OpenAI).')
+    #     return None
+
+    # get_context is largely provider-specific or handled by the provider's _prepare_messages or equivalent.
+    # For now, we simplify it or assume the provider fetches its own context if necessary.
+    # The main `get_chat_history_from_view` will just extract the raw conversation.
+    # def get_context(self) -> str: ... (Removed for now, provider specific)
+
+    def get_chat_history_from_view(self) -> list[dict]:
+        """
+        Extracts chat history from the contentView in the common format:
+        [{'role': 'user', 'content': '...'}, {'role': 'assistant', 'content': '...'}]
+        """
+        history_text = self.contentView.toPlainText().strip()
+        history = []
+        if history_text:
+            # Remove the initial prompt if it's there (e.g. from OpenAI key message)
+            # This logic might need refinement based on how initial messages are structured.
+            # For now, assuming actual chat starts after first ">>>" if any.
+            if not history_text.startswith(">>> "):
+                 # If no ">>>", it could be a single assistant message (e.g. error) or initial state.
+                 # For history purposes, we can't parse this into user/assistant turns easily without ">>>".
+                 # So, if no ">>>", assume no parseable history for this simplified version.
+                 pass # Or, treat the whole thing as an initial assistant message if that makes sense for some flows.
+
+            exchanges = [exchange for exchange in history_text.split('\n>>> ') if exchange.strip()]
+            first_exchange = True
             for exchange in exchanges:
-                qa = exchange.split('\n~~~ ')
-                for i, content in enumerate(qa):
-                    if i == 0:
-                        messages.append({'role': 'user', 'content': content.strip()})
-                    else:
-                        messages.append({'role': 'assistant', 'content': content.strip()})
-        # customise chat context
-        if context and (
-            config_manager.get_setting('chatGPTApiPredefinedContext') == 'Execute Python Code'
-            or (not history or (history and config_manager.get_setting('chatGPTApiContextInAllInputs')))
-        ):
-            # messages.append({"role": "assistant", "content": context})
-            user_input = f'{context}\n{user_input}'
-        # user input
-        messages.append({'role': 'user', 'content': user_input})
-        return messages
+                if first_exchange and history_text.startswith(">>> "): # remove the first ">>> "
+                    exchange = exchange[4:]
+                    first_exchange = False
+
+                parts = exchange.split('\n~~~ ', 1) # Split only on the first occurrence of ~~~
+                user_content = parts[0].strip()
+                history.append({'role': 'user', 'content': user_content})
+                if len(parts) > 1:
+                    assistant_content = parts[1].strip()
+                    # Further split assistant content if multiple responses were recorded (e.g. "### Response 2:")
+                    # For now, taking the whole block as one assistant turn for simplicity in history.
+                    # Actual display of multiple responses is handled by print/process_response.
+                    history.append({'role': 'assistant', 'content': assistant_content})
+        return history
 
     def print(self, text: str) -> None:
         self.contentView.appendPlainText(f'\n{text}' if self.contentView.toPlainText() else text)
@@ -1049,14 +1201,14 @@ Follow the following steps:
     # FIXME: transformers
     def print_stream(self, text: str) -> None:
         # transform responses
-        # for t in config_manager.get_internal('chatGPTTransformers'):
+        # for t in config_manager.get_setting('chat_gpt_transformers'):
         #     text = t(text)
         self.contentView.setPlainText(self.contentView.toPlainText() + text)
         # no audio for streaming tokens
-        # if config_manager.get_setting("chatGPTApiAudio"):
+        # if config_manager.get_setting("chat_gpt_api_audio"):
         #    self.play_audio(text)
         # scroll to the bottom
-        if config_manager.get_setting('chatGPTApiAutoScrolling'):
+        if config_manager.get_setting('chat_gpt_api_auto_scrolling'):
             content_scroll_bar = self.contentView.verticalScrollBar()
             content_scroll_bar.setValue(content_scroll_bar.maximum())
 
@@ -1095,7 +1247,7 @@ Follow the following steps:
             self.progressBar.hide()
 
     def get_response(self) -> None:
-        if self.progressBar.isVisible() and config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
+        if self.progressBar.isVisible() and config_manager.get_setting('chat_gpt_api_no_of_choices') == 1:
             stop_file = '.stop_chatgpt'
             if not Path(stop_file).is_file():
                 Path(stop_file).open('a').close()
@@ -1103,14 +1255,18 @@ Follow the following steps:
             user_input = self.userInput.text().strip()
             if user_input:
                 self.userInput.setDisabled(True)
-                if config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
+                if config_manager.get_setting('chat_gpt_api_no_of_choices') == 1:
                     self.sendButton.setText(config_manager.get_translation('stop'))
                     self.busyLoading = True
                     self.listView.setDisabled(True)
                     self.newButton.setDisabled(True)
-                messages = self.get_messages(user_input)
-                self.print(f'>>> {user_input}')
-                self.save_data()
+
+                # Prepare history and prompt for the LLM provider
+                chat_history = self.get_chat_history_from_view()
+                # The user_input is the current new prompt
+
+                self.print(f'>>> {user_input}') # Display the new prompt
+                self.save_data() # Save current state including the new prompt
                 self.currentLoadingID = self.contentID
                 self.currentLoadingContent = self.contentView.toPlainText().strip()
                 self.progressBar.show()  # show progress bar
@@ -1121,7 +1277,7 @@ Follow the following steps:
         return sorted([file[len(_dir) + 1 : -(len(ext) + 1)] for file in files if os.path.isfile(file)])
 
     def exec_python_file(self, script) -> None:
-        if config_manager.get_setting('developer'):
+        if config_manager.get_setting('developer'): # developer is already snake_case
             with open(script, encoding='utf8') as f:
                 code = compile(f.read(), script, 'exec')
                 exec(code, globals())
@@ -1136,24 +1292,23 @@ Follow the following steps:
                 print(msg)
 
     def run_plugins(self) -> None:
-        # The following config values can be modified with plugins, to extend functionalities
-        config_manager.update_internal('predefinedContexts', '"[none]": "", "[custom]": ""')
-        config_manager.update_internal('inputSuggestions', [])
-        config_manager.update_internal('chatGPTTransformers', [])
-        config_manager.update_internal('chatGPTApiFunctionSignatures', [])
-        config_manager.update_internal('chatGPTApiAvailableFunctions', {})
+        # The settings 'predefined_contexts', 'input_suggestions',
+        # 'chat_gpt_transformers', 'chat_gpt_api_function_signatures',
+        # and 'chat_gpt_api_available_functions' are now initialized by ConfigManager
+        # with their defaults if not present in settings.json.
+        # Plugins can still modify them via config_manager.update_setting if needed.
 
         plugin_folder = Path.cwd() / 'plugins'
         # always run 'integrate google searches'
         internet_searches = 'integrate google searches'
         script = plugin_folder / f'{internet_searches}.py'
-        self.exec_python_file(script)
+        self.exec_python_file(script, self) # Pass self (ChatGPTAPI instance)
         for plugin in self.file_names_without_extension(plugin_folder, 'py'):
-            if plugin != internet_searches and plugin not in config_manager.get_setting('chatGPTPluginExcludeList'):
+            if plugin != internet_searches and plugin not in config_manager.get_setting('chat_gpt_plugin_exclude_list'):
                 script = plugin_folder / f'{plugin}.py'
-                self.exec_python_file(script)
-        # if internetSeraches in config_manager.get_setting("chatGPTPluginExcludeList"):
-        #     config_manager.update_setting("chatGPTApiFunctionSignatures[0], ''")
+                self.exec_python_file(script, self) # Pass self
+        # if internetSeraches in config_manager.get_setting("chat_gpt_plugin_exclude_list"):
+        #     config_manager.update_setting("chat_gpt_api_function_signatures[0], ''") # Example, if needed
 
     # FIXME: transformers
     def process_response(self, responses: str) -> None:
@@ -1163,15 +1318,15 @@ Follow the following steps:
             self.contentView.setPlainText(self.currentLoadingContent)
             self.currentLoadingID = self.currentLoadingContent = ''
             # transform responses
-            # for t in config_manager.get_setting('chatGPTTransformers'):
+            # for t in config_manager.get_setting('chat_gpt_transformers'):
             #     responses = t(responses)
             # update new reponses
             self.print(responses)
             # scroll to the bottom
-            if config_manager.get_setting('chatGPTApiAutoScrolling'):
+            if config_manager.get_setting('chat_gpt_api_auto_scrolling'):
                 content_scroll_bar = self.contentView.verticalScrollBar()
                 content_scroll_bar.setValue(content_scroll_bar.maximum())
-            # if not (responses.startswith("OpenAI API re") or responses.startswith("Failed to connect to OpenAI API:")) and config_manager.get_setting("chatGPTApiAudio"):
+            # if not (responses.startswith("OpenAI API re") or responses.startswith("Failed to connect to OpenAI API:")) and config_manager.get_setting("chat_gpt_api_audio"):
             #        self.play_audio(responses)
         # empty user input
         self.userInput.setText('')
@@ -1179,7 +1334,7 @@ Follow the following steps:
         self.save_data()
         # hide progress bar
         self.userInput.setEnabled(True)
-        if config_manager.get_setting('chatGPTApiNoOfChoices') == 1:
+        if config_manager.get_setting('chat_gpt_api_no_of_choices') == 1:
             self.listView.setEnabled(True)
             self.newButton.setEnabled(True)
             self.busyLoading = False
@@ -1195,7 +1350,7 @@ Follow the following steps:
                 audio_file = (Path('temp') / f'gtts_{index}.mp3').resolve()
                 if audio_file.is_file():
                     audio_file.unlink()
-                gTTS(text=text, lang=config_manager.get_setting('chatGPTApiAudioLanguage') or 'en').save(
+                gTTS(text=text, lang=config_manager.get_setting('chat_gpt_api_audio_language') or 'en').save(
                     audio_file,
                 )
                 audio_files.append(audio_file)
@@ -1321,7 +1476,15 @@ class MainWindow(QMainWindow):
 
         # Create predefined context menu
         context_menu = menubar.addMenu(config_manager.get_translation('predefinedContext'))
-        for index, context in enumerate(config_manager.get_setting('predefinedContexts')):
+        # Assuming get_setting('predefined_contexts') returns a dictionary or a string to be evaluated
+        predefined_contexts_menu = config_manager.get_setting('predefined_contexts')
+        if isinstance(predefined_contexts_menu, str):
+            try:
+                predefined_contexts_menu = literal_eval(predefined_contexts_menu)
+            except (ValueError, SyntaxError):
+                predefined_contexts_menu = {} # Default to empty if parsing fails
+
+        for index, context in enumerate(predefined_contexts_menu.keys()): # Iterate over keys
             context_action = QAction(context, self)
             if index < 10:
                 context_action.setShortcut(f'Ctrl+{index}')
@@ -1382,18 +1545,21 @@ class MainWindow(QMainWindow):
         self.show()
 
     def update_exclude_plugin_list(self, plugin: str) -> None:
-        if plugin in config_manager.get_setting('chatGPTPluginExcludeList'):
-            config_manager.get_internal('chatGPTPluginExcludeList').remove(plugin)
+        exclude_list = config_manager.get_setting('chat_gpt_plugin_exclude_list')
+        if plugin in exclude_list:
+            exclude_list.remove(plugin)
         else:
-            config_manager.get_internal('chatGPTPluginExcludeList').append(plugin)
+            exclude_list.append(plugin)
+        config_manager.update_setting('chat_gpt_plugin_exclude_list', exclude_list)
+
         internet_searches = 'integrate google searches'
-        if internet_searches in config_manager.get_setting('chatGPTPluginExcludeList') and config_manager.get_setting('loadingInternetSearches') == 'auto':
-            config_manager.update_setting('loadingInternetSearches', 'none')
-        elif internet_searches not in config_manager.get_setting('chatGPTPluginExcludeList') and config_manager.get_setting('loadingInternetSearches') == 'none':
-            config_manager.update_setting('loadingInternetSearches', 'auto')
-            config_manager.update_setting('chatGPTApiFunctionCall', 'auto')
+        if internet_searches in exclude_list and config_manager.get_setting('loading_internet_searches') == 'auto':
+            config_manager.update_setting('loading_internet_searches', 'none')
+        elif internet_searches not in exclude_list and config_manager.get_setting('loading_internet_searches') == 'none':
+            config_manager.update_setting('loading_internet_searches', 'auto')
+            config_manager.update_setting('chat_gpt_api_function_call', 'auto')
         # reload plugins
-        config_manager.get_internal('chatGPTApi').runPlugins()
+        self.chatGPT.run_plugins()
 
     def file_names_without_extension(self, directory: Path, ext: str) -> list:
         return [item for item in directory.glob(f'*.{ext}') if item.is_file()]
@@ -1410,7 +1576,7 @@ class MainWindow(QMainWindow):
         return open_command
 
     def open_database_directory(self) -> None:
-        database_directory = Path(config_manager.get_setting('chatGPTApiLastChatDatabase')).parent
+        database_directory = Path(config_manager.get_setting('chat_gpt_api_last_chat_database')).parent
         open_command = self.get_open_command()
         os.system(f'{open_command} {database_directory}')
 
@@ -1419,17 +1585,22 @@ class MainWindow(QMainWindow):
         os.system(f'{open_command} plugins')
 
     def toggle_regexp(self) -> None:
-        config_manager.update_setting('regexpSearchEnabled', str(not bool(config_manager.get_setting('regexpSearchEnabled'))))
+        current_value = config_manager.get_setting('regexp_search_enabled')
+        new_value = not current_value
+        config_manager.update_setting('regexp_search_enabled', new_value)
         self.chatGPT.update_search_tool_tips()
-        QMessageBox.information(self, 'ChatGPTQT', f"Regex for search and replace is {'enabled' if config_manager.get_setting('regexpSearchEnabled') else 'disabled'}!")
+        QMessageBox.information(self, 'ChatGPTQT', f"Regex for search and replace is {'enabled' if new_value else 'disabled'}!")
 
     def toggle_system_tray(self) -> None:
-        config_manager.update_setting('enableSystemTray', not config_manager.get_setting('enableSystemTray'))
+        current_value = config_manager.get_setting('enable_system_tray')
+        new_value = not current_value
+        config_manager.update_setting('enable_system_tray', new_value)
         QMessageBox.information(self, 'ChatGPTQT', 'You need to restart this application to make the changes effective.')
 
     def toggle_theme(self) -> None:
-        config_manager.update_internal('darkTheme', not config_manager.get_internal('darkTheme'))
-        qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
+        is_dark_theme = config_manager.get_setting('dark_theme')
+        config_manager.update_setting('dark_theme', not is_dark_theme) # This was correct
+        qdarktheme.setup_theme() if not is_dark_theme else qdarktheme.setup_theme('light') # This logic was correct
 
     # Work with system tray
     def is_wayland(self) -> bool:
@@ -1451,14 +1622,15 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
+    main_window_instance = None
 
     def show_main_window() -> None:
-        if not config_manager.get_internal('mainWindow'):
+        global main_window_instance
+        if not main_window_instance:
             main_window_instance = MainWindow()
-            config_manager.update_internal('mainWindow', main_window_instance)
-            qdarktheme.setup_theme() if config_manager.get_setting('darkTheme') else qdarktheme.setup_theme('light')
+            qdarktheme.setup_theme() if config_manager.get_setting('dark_theme') else qdarktheme.setup_theme('light')
         else:
-            config_manager.get_internal('mainWindow').bring_to_foreground(config_manager.get_internal('mainWindow'))
+            main_window_instance.bring_to_foreground(main_window_instance)
 
     # TODO: probably unneeded
     def about_to_quit() -> None:
@@ -1555,7 +1727,7 @@ Name=ChatGPTQT
                     copyfile(linux_desktop_file, desktop_path_shortcut)
 
     # system tray
-    if config_manager.get_setting('enableSystemTray'):
+    if config_manager.get_setting('enable_system_tray'):
         app.setQuitOnLastWindowClosed(False)
         # Set up tray icon
         tray = QSystemTrayIcon()

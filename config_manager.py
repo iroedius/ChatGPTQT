@@ -12,33 +12,43 @@ class ConfigManager:
         self.internal = {}
 
         default_settings = (
-            ('chatGPTApiAudio', 0),
-            ('chatGPTApiAudioLanguage', 'en'),
-            ('chatGPTApiModel', 'gpt-4-turbo-preview'),
-            ('chatGPTApiPredefinedContext', '[none]'),
-            ('chatGPTApiContext', ''),
-            ('chatGPTApiLastChatDatabase', ''),
-            ('chatGPTApiMaxTokens', 4096),
-            ('chatGPTApiNoOfChoices', 1),
-            ('chatGPTApiTemperature', 0.8),
-            ('chatGPTApiFunctionCall', 'none'),
-            ('chatAfterFunctionCalled', True),
-            ('runPythonScriptGlobally', False),
-            ('darkTheme', True),
+            ('chat_gpt_api_audio', 0),
+            ('chat_gpt_api_audio_language', 'en'),
+            ('chat_gpt_api_model', 'gpt-4-turbo-preview'),
+            ('chat_gpt_api_predefined_context', '[none]'),
+            ('chat_gpt_api_context', ''),
+            ('chat_gpt_api_last_chat_database', ''),
+            ('chat_gpt_api_max_tokens', 4096),
+            ('chat_gpt_api_no_of_choices', 1),
+            ('chat_gpt_api_temperature', 0.8),
+            ('chat_gpt_api_function_call', 'none'),
+            ('chat_after_function_called', True),
+            ('run_python_script_globally', False),
+            ('dark_theme', True),
             ('developer', False),
-            ('enableSystemTray', True),
-            ('fontSize', 14),
-            ('pocketsphinxModelPath', ''),
-            ('pocketsphinxModelPathBin', ''),
-            ('pocketsphinxModelPathDict', ''),
-            ('regexpSearchEnabled', True),
+            ('enable_system_tray', True),
+            ('font_size', 14),
+            ('pocketsphinx_model_path', ''),
+            ('pocketsphinx_model_path_bin', ''),
+            ('pocketsphinx_model_path_dict', ''),
+            ('regexp_search_enabled', True),
             # 'includeDuckDuckGoSearchResults', False,
             # 'maximumDuckDuckGoSearchResults', 5,
-            ('loadingInternetSearches', 'none'),
-            ('maximumInternetSearchResults', 5),
-            ('chatGPTApiContextInAllInputs', False),
-            ('chatGPTApiAutoScrolling', True),
-            ('chatGPTPluginExcludeList', ['testing_function_calling', 'zzz_automation_example']),
+            ('loading_internet_searches', 'none'),
+            ('maximum_internet_search_results', 5),
+            ('chat_gpt_api_context_in_all_inputs', False),
+            ('chat_gpt_api_auto_scrolling', True),
+            ('chat_gpt_plugin_exclude_list', ['testing_function_calling', 'zzz_automation_example']),
+            ('predefined_contexts', { "[none]": "", "[custom]": "" }),
+            ('input_suggestions', []),
+            ('chat_gpt_transformers', []),
+            ('chat_gpt_api_function_signatures', []),
+            ('chat_gpt_api_available_functions', {}),
+            ('python_function_response', ''),
+            ('integrate_google_searches_signature', []),
+            ('gemini_api_key', ''),
+            ('gemini_model_name', 'gemini-pro'),
+            ('selected_llm_provider', 'openai'),
         )
 
         for key, value in default_settings:
@@ -64,12 +74,6 @@ class ConfigManager:
     def update_setting(self, key: str, value: str | float | bool | list) -> None:
         self.settings[key] = value
         self.save_config()
-
-    def get_internal(self, key: str) -> Any:
-        return self.internal.get(key)
-
-    def update_internal(self, key: str, value: Any) -> None:
-        self.internal[key] = value
 
     def save_config(self) -> None:
         with Path(self.settings_path).open('w') as f:
